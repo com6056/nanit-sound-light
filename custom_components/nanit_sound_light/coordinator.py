@@ -235,6 +235,17 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         """Get the last known good color for a device."""
         return self._last_colors.get(baby_uid)
 
+    def save_last_color(self, baby_uid: str, color_dict: Dict[str, Any]) -> None:
+        """Save a user-chosen color as the last color to restore later."""
+        if not color_dict.get("noColor", True):  # Only save when color is enabled
+            last_color = {
+                "hue": color_dict["hue"],
+                "saturation": color_dict["saturation"],
+                "brightness": color_dict.get("brightness", 1.0),
+            }
+            self._last_colors[baby_uid] = last_color
+            _LOGGER.debug("Saved last color for %s: %s", baby_uid, last_color)
+
     async def _on_device_state_change(self, baby_uid: str) -> None:
         """Handle real-time device state changes from WebSocket."""
         _LOGGER.debug("Real-time state change detected for device %s", baby_uid)

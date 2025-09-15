@@ -132,11 +132,11 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
         current_no_color = device_data.get("no_color", False)
         device_is_on = device_data.get("is_on", False)
 
-        # If light is currently off or has no color, restore last known color
+        # If light is currently off or has no color, restore color
         if current_no_color or not device_is_on:
             last_color = self.coordinator.get_last_color(self._device_uid)
-            if last_color:
-                # Use stored last color when turning on from off state
+            if last_color and "hs_color" not in kwargs:
+                # Use stored last color when just turning on (no explicit color from HA)
                 color_dict = {
                     "noColor": False,
                     "hue": last_color["hue"],
@@ -153,7 +153,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 )
                 control_params["color"] = color_dict
             elif "hs_color" in kwargs:
-                # No stored color, use HA UI color
+                # Use HA UI color (either no stored color OR user explicitly set color)
                 hue, saturation = kwargs["hs_color"]
                 color_dict = {
                     "noColor": False,
@@ -161,18 +161,16 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                     "saturation": saturation / 100.0,
                     "brightness": control_params.get("brightness", 1.0),
                 }
-                _LOGGER.debug("Using HA UI color for %s", self._device_uid)
+                _LOGGER.debug(
+                    "Using HA UI color for %s: hue=%.3f, sat=%.3f",
+                    self._device_uid,
+                    color_dict["hue"],
+                    color_dict["saturation"],
+                )
                 control_params["color"] = color_dict
-            else:
-                # No stored color and no HA color, use default warm white
-                color_dict = {
-                    "noColor": False,
-                    "hue": 0.083,  # ~30° warm white
-                    "saturation": 0.1,  # Low saturation for white light
-                    "brightness": control_params.get("brightness", 1.0),
-                }
-                _LOGGER.debug("Using default color for %s", self._device_uid)
-                control_params["color"] = color_dict
+                # Save this as last color for future restoration
+                self.coordinator.save_last_color(self._device_uid, color_dict)
+            # Remove the default warm white fallback - if no color info, don't set color
         elif "hs_color" in kwargs:
             # Device is on and user set explicit color - check if it's different from current
             current_hue = device_data.get("hue", 0.0) * 360.0  # Convert to degrees
@@ -195,6 +193,8 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 }
                 _LOGGER.debug("Color changed for %s", self._device_uid)
                 control_params["color"] = color_dict
+                # Save this as last color for future restoration
+                self.coordinator.save_last_color(self._device_uid, color_dict)
             else:
                 # Color is essentially the same - just a power toggle, don't set color
                 _LOGGER.debug("Color unchanged for %s, not setting", self._device_uid)
