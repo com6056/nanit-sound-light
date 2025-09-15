@@ -16,11 +16,17 @@ A Home Assistant custom integration for **Nanit Sound + Light devices only**.
 
 ### HACS (Recommended)
 
-1. Add this repository to HACS as a custom repository
-2. Install "Nanit Sound + Light" from HACS
-3. Restart Home Assistant
-4. Go to Settings > Devices & Services > Add Integration
-5. Search for "Nanit Sound + Light" and configure with your Nanit credentials
+This integration is available through HACS (Home Assistant Community Store).
+
+1. Install HACS if you haven't already
+2. Add this repository to HACS as a custom repository:
+   - Go to HACS → Integrations → ⋮ → Custom repositories
+   - Add repository URL: `https://github.com/com6056/nanit-sound-light`
+   - Category: Integration
+3. Install "Nanit Sound + Light" from HACS
+4. Restart Home Assistant
+5. Go to Settings → Devices & Services → Add Integration
+6. Search for "Nanit Sound + Light" and configure with your Nanit credentials
 
 ### Manual Installation
 
