@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nanit Sound + Light Setup",
+        "description": "Enter your Nanit account credentials to connect your Sound + Light devices.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "mfa": {
+        "title": "Multi-Factor Authentication",
+        "description": "Enter the verification code sent to {email}",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Nanit servers. Please check your credentials and try again.",
+      "invalid_auth": "Invalid email or password. Please check your credentials.",
+      "invalid_mfa": "Invalid verification code. Please try again.",
+      "no_devices": "No Sound + Light devices found on your account.",
+      "unknown": "An unexpected error occurred. Please try again."
+    }
+  }
+}

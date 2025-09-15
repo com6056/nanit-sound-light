@@ -1,0 +1,76 @@
+// Nanit Sound + Light Device Protocol
+// Reverse engineered from APK v4.0.6
+
+syntax = "proto2";
+
+// Main message wrapper
+message Message {
+    optional Request request = 1;           // Request data
+    optional Response response = 2;         // Response data  
+    optional bytes backend = 3;             // Backend data
+}
+
+// Request message - contains essential message types
+message Request {
+    optional int32 id = 1;                  // Message ID
+    optional string sessionId = 200;        // Session ID  
+    optional GetSettings getSettings = 5;   // Get settings request
+    optional Settings settings = 6;         // Device settings
+    optional Status status = 10;            // Status info
+}
+
+// Response message for parsing incoming data
+message Response {
+    optional int32 requestId = 1;           // Request ID
+    optional int32 statusCode = 2;          // Status code
+    optional string statusMessage = 3;      // Status message
+    optional Settings settings = 4;         // Settings response
+    optional Status status = 6;             // Status response
+}
+
+// GetSettings request - only fields actually used by integration
+message GetSettings {
+    optional bool all = 1;                  // Get all configuration
+    optional bool savedSounds = 7;          // Get saved sounds
+    optional bool temperature = 8;          // Get temperature
+    optional bool humidity = 9;             // Get humidity
+}
+
+// Settings for device state and control commands
+message Settings {
+    optional float brightness = 1;          // Brightness control
+    optional Color color = 2;               // Color control
+    optional float volume = 3;              // Volume control
+    optional Sound sound = 4;               // Sound control
+    optional bool isOn = 5;                 // Power control
+    optional SoundList soundList = 6;       // Available sounds list
+    optional float temperature = 7;         // Temperature sensor
+    optional float humidity = 8;            // Humidity sensor
+}
+
+// Color control data - matches official APK structure exactly
+message Color {
+    optional bool noColor = 1;              // Disable color
+    optional float hue = 2;                 // Hue (0.0-1.0)
+    optional float saturation = 3;          // Saturation (0.0-1.0)
+    // Note: brightness is handled separately in Settings.brightness, not in Color
+}
+
+// Sound control data
+message Sound {
+    optional bool noSound = 1;              // Disable sound
+    optional string track = 2;              // Track name
+}
+
+// Sound list from device
+message SoundList {
+    repeated string tracks = 1;             // Available sound track names
+}
+
+// Status message for sensor data
+message Status {
+    optional float temperature = 2;         // Temperature sensor
+    optional float humidity = 3;            // Humidity sensor
+}
+
+
