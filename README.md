@@ -1,72 +1,81 @@
-# Nanit Sound + Light for Home Assistant
+# Nanit Sound + Light Integration
 
-A Home Assistant custom integration for **Nanit Sound + Light devices only**.
+[![GitHub Release][releases-shield]][releases]
+[![GitHub Activity][commits-shield]][commits]
+[![License][license-shield]](LICENSE)
 
-## Features ✅ **ALL WORKING & TESTED**
+[![hacs][hacsbadge]][hacs]
 
-- **✅ Power Control** - Turn Sound + Light device on/off (confirmed working)
-- **✅ Brightness Control** - LED brightness adjustment (0-100%, confirmed working)
-- **✅ Color Control** - HSB color adjustment (hue, saturation, brightness, confirmed working)
-- **✅ Volume Control** - Sound volume adjustment (0-100%, confirmed working)  
-- **✅ Sound Selection** - Choose from 11 built-in sounds (confirmed working with "Lullaby", "White Noise", etc.)
-- **✅ Multi-Factor Authentication** - Full MFA support for Nanit accounts
-- **✅ Temperature & Humidity Sensors** - Environmental monitoring
+_Control your Nanit Sound + Light devices directly from Home Assistant._
+
+**This integration focuses exclusively on Nanit Sound + Light devices** and provides complete control over lighting, sound, and environmental monitoring.
+
+## Features
+
+- 💡 **Light Control** - Full brightness and color adjustment
+- 🔊 **Sound Control** - Volume and sound selection with 11+ built-in options
+- ⚡ **Power Management** - Complete device on/off control
+- 🌡️ **Environmental Sensors** - Temperature and humidity monitoring
+- 🔐 **Secure Authentication** - Full MFA support with automatic token refresh
+- 🔄 **Real-time Updates** - Instant state synchronization
 
 ## Installation
 
 ### HACS (Recommended)
 
-This integration is available through HACS (Home Assistant Community Store).
-
-1. Install HACS if you haven't already
-2. Add this repository to HACS as a custom repository:
-   - Go to HACS → Integrations → ⋮ → Custom repositories
-   - Add repository URL: `https://github.com/com6056/nanit-sound-light`
+1. Ensure that [HACS](https://hacs.xyz/) is installed
+2. Add this repository as a custom repository:
+   - In HACS, go to "Integrations" → "..." → "Custom repositories"
+   - Repository: `https://github.com/com6056/nanit-sound-light`
    - Category: Integration
-3. Install "Nanit Sound + Light" from HACS
+3. Click "Install" on the "Nanit Sound + Light" integration
 4. Restart Home Assistant
-5. Go to Settings → Devices & Services → Add Integration
-6. Search for "Nanit Sound + Light" and configure with your Nanit credentials
+5. In the Home Assistant UI, go to "Settings" → "Devices & Services" → "Add Integration" → "Nanit Sound + Light"
 
 ### Manual Installation
 
-1. Copy the `custom_components/nanit_sound_light` folder to your Home Assistant `custom_components` directory
-2. Restart Home Assistant
-3. Add the integration through the UI
+1. Using the tool of choice, open the directory (folder) for your HA configuration (where you find `configuration.yaml`)
+2. If you do not have a `custom_components` directory there, create it
+3. In the `custom_components` directory create a new folder called `nanit_sound_light`
+4. Download _all_ the files from the `custom_components/nanit_sound_light/` directory in this repository
+5. Place the files you downloaded in the new directory you created
+6. Restart Home Assistant
+7. In the Home Assistant UI, go to "Settings" → "Devices & Services" → "Add Integration" → "Nanit Sound + Light"
 
 ## Configuration
 
-1. **Email & Password**: Your Nanit account credentials
-2. **MFA Support**: If you have multi-factor authentication enabled, you'll be prompted for the verification code
-3. **Device Discovery**: The integration will automatically find your Sound + Light devices
+The integration will guide you through the setup process:
 
-## Supported Devices
+1. **Account Credentials** - Enter your Nanit email and password
+2. **MFA (if enabled)** - Enter the verification code sent to your email
+3. **Device Discovery** - Your Sound + Light devices will be automatically discovered
 
-- **Nanit Sound + Light** - All models with environmental sensors
+If your session expires, the integration will automatically handle re-authentication, including MFA if required.
+
+## Supported Entities
+
+| Entity Type | Description |
+|-------------|-------------|
+| **Light** | Brightness (0-100%) and color control (HSB) |
+| **Switch** | Device power on/off |
+| **Number** | Volume control (0-100%) |
+| **Select** | Sound selection (No sound + 11 built-in sounds) |
+| **Sensor** | Temperature and humidity monitoring |
 
 ## Why Sound + Light Only?
 
-This integration focuses exclusively on Sound + Light devices to provide:
-- **Reliable protobuf communication** with `wss://remote.nanit.com/speakers`
-- **Complete device control** - all major functions working and tested
-- **Real-time state synchronization** via configuration response parsing  
-- **Clean architecture** without camera complexity
-- **Pure protobuf implementation** - no manual hex building
+This integration is specifically designed for Nanit Sound + Light devices to provide:
 
-## ✅ **Verified Working Status**
-
-All controls have been **tested and confirmed working** on actual hardware:
-- **Power ON/OFF**: Device responds immediately ✅
-- **Brightness 0-100%**: Light visibly changes ✅  
-- **Volume 0-100%**: Sound volume audibly changes ✅
-- **Sound Selection**: Successfully changed to "Lullaby", "White Noise" ✅
-- **Color Control**: Light visibly changed to red color ✅
+- **Reliable Communication** - Direct protobuf protocol with Nanit's speaker WebSocket service
+- **Complete Control** - All device functions fully implemented and tested
+- **Real-time Updates** - Instant state changes without polling delays
+- **Clean Architecture** - Focused scope without camera complexity
 
 ## Troubleshooting
 
-### **Enable Debug Logging**
+### Debug Logging
 
-Add this to your Home Assistant `configuration.yaml`:
+If you encounter issues, enable debug logging by adding this to your `configuration.yaml`:
 
 ```yaml
 logger:
@@ -74,52 +83,41 @@ logger:
     custom_components.nanit_sound_light: debug
 ```
 
-Then restart Home Assistant and check the logs.
+Then restart Home Assistant and check **Settings** → **System** → **Logs**.
 
-### **Key Debug Log Patterns**
+### Common Issues
 
-#### **🔗 Connection Issues:**
-```
-INFO - Setting up Nanit Sound + Light integration
-INFO - Connected to device: Sound and Light  
-INFO - Authentication successful
-```
+| Issue | Solution |
+|-------|----------|
+| Authentication failed | Verify credentials; delete and re-add integration if needed |
+| Invalid MFA code | Use the 4-digit code from email (not SMS) |
+| No devices found | Ensure device is paired and online in the Nanit app |
+| Connection timeout | Check network connectivity and device status |
 
-#### **🎛️ Control Commands:**
-```
-DEBUG - Sent protobuf control for {device}: {'brightness': 0.5} (hex: ...)
-DEBUG - Parsed brightness: 0.500
-DEBUG - Updated device {name} state: brightness=0.500, volume=0.400, power=True
-```
+### Getting Help
 
-#### **📡 WebSocket Communication:**
-```
-INFO - Connected to Sound + Light device: L151AMN2434018
-DEBUG - Received 49 bytes on {device}_speaker
-DEBUG - Successfully parsed protobuf response for {device}
-DEBUG - Response fields: ['configData']
-```
+When reporting issues, please include:
+- Debug logs showing the error
+- Home Assistant version
+- Steps to reproduce the issue
 
-#### **❌ Common Issues:**
-- **"Authentication failed"** → Check credentials, MFA code
-- **"No Sound + Light devices found"** → Check device is paired in Nanit app
-- **"No WebSocket connection"** → Check network, device online status
-- **"Protobuf parsing failed"** → New message format, check hex dump
+## Contributions
 
-### **Troubleshooting Steps**
-
-1. **Enable debug logging** (see above)
-2. **Restart Home Assistant** to apply logging changes
-3. **Check logs** in Settings → System → Logs
-4. **Look for specific error patterns** above
-5. **Report issues** with debug logs showing connection and parsing details
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Credits
 
 - **Original Nanit integration**: [@indiefan](https://github.com/indiefan) - [home_assistant_nanit](https://github.com/indiefan/home_assistant_nanit)
-- **Authentication flow**: Based on working implementation from original integration
-- **WebSocket patterns**: Learned from original Nanit camera WebSocket implementation
-- **Sound + Light protobuf**: Reverse-engineered from APK analysis and hex dump analysis
-- **APK analysis techniques**: Inspired by original developer notes and reverse engineering approach
+- **Sound + Light protocol**: Reverse-engineered from APK analysis
 
 This integration builds upon the foundational work of the original Nanit integration while focusing specifically on Sound + Light devices.
+
+---
+
+[releases-shield]: https://img.shields.io/github/release/com6056/nanit-sound-light.svg?style=for-the-badge
+[releases]: https://github.com/com6056/nanit-sound-light/releases
+[commits-shield]: https://img.shields.io/github/commit-activity/y/com6056/nanit-sound-light.svg?style=for-the-badge
+[commits]: https://github.com/com6056/nanit-sound-light/commits/main
+[hacs]: https://github.com/hacs/integration
+[hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/github/license/com6056/nanit-sound-light.svg?style=for-the-badge
