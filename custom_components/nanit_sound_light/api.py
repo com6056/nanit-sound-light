@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import ssl
+import time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -46,11 +47,32 @@ class SoundLightAPI:
         self._device_state: Dict[str, Dict[str, Any]] = {}
         self._message_id = 1
         self._state_change_callback = None  # Callback for real-time updates
+        self._last_auth_failure = None  # Track last auth failure time
+        self._auth_retry_count = 0  # Track consecutive auth failures
+        self._max_retry_count = 3  # Max retries before requiring manual intervention
+        self._token_update_callback = None  # Callback for token updates
+        self._stored_email: Optional[str] = None
+        self._stored_password: Optional[str] = None
+        self._pending_mfa_token: Optional[str] = None  # Store MFA token when needed
+        self._mfa_required_callback = None  # Callback when MFA is required
+
+    def has_stored_credentials(self) -> bool:
+        """Check if we have stored credentials for re-authentication."""
+        return (
+            self._stored_email is not None
+            and self._stored_password is not None
+            and len(self._stored_email.strip()) > 0
+            and len(self._stored_password.strip()) > 0
+        )
 
     async def authenticate(
         self, email: str, password: str, refresh_token: Optional[str] = None
     ) -> None:
         """Authenticate with Nanit API (try refresh token first like working implementation)."""
+        # Store credentials for potential re-authentication
+        self._stored_email = email
+        self._stored_password = password
+
         if refresh_token:
             self._refresh_token = refresh_token
             # Try to use existing refresh token first
@@ -78,9 +100,20 @@ class SoundLightAPI:
                     # Successful login without MFA
                     response_data = await response.json()
                     self._access_token = response_data.get("access_token")
-                    self._refresh_token = response_data.get("refresh_token")
+                    new_refresh_token = response_data.get("refresh_token")
+                    if new_refresh_token:
+                        self._refresh_token = new_refresh_token
+                        # Notify coordinator of token update
+                        if self._token_update_callback:
+                            try:
+                                await self._token_update_callback(new_refresh_token)
+                            except Exception as e:
+                                _LOGGER.debug("Token update callback failed: %s", e)
 
                     if self._access_token:
+                        # Reset auth failure tracking on success
+                        self._last_auth_failure = None
+                        self._auth_retry_count = 0
                         _LOGGER.info("Authentication successful")
                         return {"success": True}
 
@@ -99,8 +132,15 @@ class SoundLightAPI:
                 )
 
         except MfaRequiredError:
-            # Re-raise MFA errors as-is
+            # Re-raise MFA errors as-is (don't count as auth failure for retry purposes)
             raise
+        except (
+            aiohttp.ClientError,
+            aiohttp.ServerTimeoutError,
+            asyncio.TimeoutError,
+        ) as e:
+            _LOGGER.error("Network error during authentication: %s", e)
+            raise AuthenticationError(f"Network error during login: {e}")
         except Exception as e:
             _LOGGER.error("Authentication failed: %s", e)
             raise AuthenticationError(f"Login failed: {e}")
@@ -138,19 +178,37 @@ class SoundLightAPI:
                 if response.status == 201:
                     response_data = await response.json()
                     self._access_token = response_data.get("access_token")
-                    self._refresh_token = response_data.get("refresh_token")
+                    new_refresh_token = response_data.get("refresh_token")
+                    if new_refresh_token:
+                        self._refresh_token = new_refresh_token
+                        # Notify coordinator of token update
+                        if self._token_update_callback:
+                            try:
+                                await self._token_update_callback(new_refresh_token)
+                            except Exception as e:
+                                _LOGGER.debug("Token update callback failed: %s", e)
 
                     if not self._access_token:
                         raise AuthenticationError(
                             "No access token received after MFA verification"
                         )
 
+                    # Reset auth failure tracking on successful MFA
+                    self._last_auth_failure = None
+                    self._auth_retry_count = 0
                     _LOGGER.info("MFA verification successful")
                 else:
                     raise AuthenticationError(
                         f"MFA verification failed: {response.status} - {response_text}"
                     )
 
+        except (
+            aiohttp.ClientError,
+            aiohttp.ServerTimeoutError,
+            asyncio.TimeoutError,
+        ) as e:
+            _LOGGER.error("Network error during MFA verification: %s", e)
+            raise AuthenticationError(f"Network error during MFA verification: {e}")
         except Exception as e:
             _LOGGER.error("MFA verification failed: %s", e)
             raise AuthenticationError(f"MFA verification failed: {e}")
@@ -168,26 +226,143 @@ class SoundLightAPI:
                 if response.status == 200:
                     data = await response.json()
                     self._access_token = data.get("access_token")
-                    self._refresh_token = data.get(
-                        "refresh_token"
-                    )  # Update refresh token too
+                    new_refresh_token = data.get("refresh_token")
+                    if new_refresh_token:
+                        self._refresh_token = new_refresh_token
+                        # Notify coordinator of token update
+                        if self._token_update_callback:
+                            try:
+                                await self._token_update_callback(new_refresh_token)
+                            except Exception as e:
+                                _LOGGER.debug("Token update callback failed: %s", e)
+                    # Reset auth failure tracking on successful refresh
+                    self._last_auth_failure = None
+                    self._auth_retry_count = 0
                     _LOGGER.info("Token refresh successful")
                     return True
                 elif response.status == 404:
                     _LOGGER.debug("Refresh token expired, need to re-login")
+                    # Clear expired tokens
+                    self._refresh_token = None
+                    self._access_token = None
+                else:
+                    _LOGGER.debug(
+                        "Token refresh failed with status: %d", response.status
+                    )
+        except (
+            aiohttp.ClientError,
+            aiohttp.ServerTimeoutError,
+            asyncio.TimeoutError,
+        ) as e:
+            _LOGGER.debug("Network error during token refresh: %s", e)
         except Exception as e:
             _LOGGER.debug("Token refresh failed: %s", e)
 
         return False
 
+    def _should_attempt_auth(self) -> bool:
+        """Check if we should attempt authentication based on retry limits and timing."""
+        # If we haven't failed recently, allow auth attempt
+        if self._last_auth_failure is None:
+            return True
+
+        # Calculate time since last failure
+        time_since_failure = (
+            time.time() - self._last_auth_failure
+        )  # If we've hit max retries, require a longer wait period (30 minutes)
+        if self._auth_retry_count >= self._max_retry_count:
+            if time_since_failure < 1800:  # 30 minutes
+                _LOGGER.warning(
+                    "Authentication retry limit reached (%d attempts). "
+                    "Will retry after 30 minutes to prevent MFA spam. "
+                    "Time remaining: %.1f minutes",
+                    self._auth_retry_count,
+                    (1800 - time_since_failure) / 60,
+                )
+                return False
+            else:
+                # Reset retry count after waiting period
+                _LOGGER.info("Retry wait period expired, resetting auth retry count")
+                self._auth_retry_count = 0
+                self._last_auth_failure = None
+                return True
+
+        # Exponential backoff for earlier retries (30s, 2min, 5min)
+        min_wait_times = [30, 120, 300]  # seconds
+        if self._auth_retry_count > 0:
+            min_wait = min_wait_times[
+                min(self._auth_retry_count - 1, len(min_wait_times) - 1)
+            ]
+            if time_since_failure < min_wait:
+                _LOGGER.debug(
+                    "Authentication backoff active. Wait %.1f more seconds",
+                    min_wait - time_since_failure,
+                )
+                return False
+
+        return True
+
+    def _record_auth_failure(self) -> None:
+        """Record an authentication failure for rate limiting."""
+        self._last_auth_failure = time.time()
+        self._auth_retry_count += 1
+
+    async def ensure_authenticated(self) -> bool:
+        """Ensure we have a valid access token, refreshing if needed."""
+        # If we have a token, try to refresh it first
+        if self._access_token and self._refresh_token:
+            if await self._refresh_auth():
+                return True
+            # If refresh failed, clear the invalid token
+            self._access_token = None
+
+        # If we don't have a valid token and should not attempt auth, return False
+        if not self._access_token and not self._should_attempt_auth():
+            return False
+
+        # If we have no token but stored credentials, try to re-authenticate
+        if not self._access_token and self.has_stored_credentials():
+            try:
+                await self.authenticate(
+                    self._stored_email, self._stored_password, self._refresh_token
+                )
+                return self._access_token is not None
+            except MfaRequiredError as mfa_error:
+                # Store MFA token and notify coordinator to trigger repair flow
+                self._pending_mfa_token = mfa_error.mfa_token
+                _LOGGER.info("MFA required for re-authentication")
+                if self._mfa_required_callback:
+                    try:
+                        await self._mfa_required_callback()
+                    except Exception as e:
+                        _LOGGER.debug("MFA required callback failed: %s", e)
+                return False
+            except AuthenticationError as e:
+                self._record_auth_failure()
+                _LOGGER.error("Re-authentication failed: %s", e)
+                return False
+
+        return self._access_token is not None
+
     async def get_sound_light_devices(self) -> List[Dict[str, Any]]:
         """Get list of Sound + Light devices."""
-        if not self._access_token:
-            raise AuthenticationError("Not authenticated")
+        if not await self.ensure_authenticated():
+            raise AuthenticationError("Authentication failed or not authenticated")
 
         headers = {"Authorization": f"Bearer {self._access_token}"}
 
         async with self._session.get(NANIT_BABIES_URL, headers=headers) as response:
+            if response.status == 401:
+                # Token expired, try to refresh and retry once
+                if await self._refresh_auth():
+                    headers = {"Authorization": f"Bearer {self._access_token}"}
+                    async with self._session.get(
+                        NANIT_BABIES_URL, headers=headers
+                    ) as retry_response:
+                        response = retry_response
+                else:
+                    raise AuthenticationError("Token expired and refresh failed")
+
             if response.status == 200:
                 babies_data = await response.json()
                 sound_light_devices = []
@@ -643,6 +818,55 @@ class SoundLightAPI:
         """Set callback function to be called when device state changes via WebSocket."""
         self._state_change_callback = callback
 
+    def set_token_update_callback(self, callback):
+        """Set callback function to be called when tokens are updated."""
+        self._token_update_callback = callback
+
+    def set_mfa_required_callback(self, callback):
+        """Set callback function to be called when MFA is required during re-auth."""
+        self._mfa_required_callback = callback
+
+    def is_mfa_pending(self) -> bool:
+        """Check if MFA authentication is pending."""
+        return self._pending_mfa_token is not None
+
+    async def complete_pending_mfa(self, mfa_code: str) -> bool:
+        """Complete pending MFA authentication."""
+        if not self._pending_mfa_token:
+            _LOGGER.error("No pending MFA authentication")
+            return False
+
+        if not self.has_stored_credentials():
+            _LOGGER.error("No stored credentials for MFA completion")
+            return False
+
+        try:
+            await self.complete_mfa_authentication(
+                self._stored_email,
+                self._stored_password,
+                self._pending_mfa_token,
+                mfa_code,
+            )
+            # Clear pending MFA state on success
+            self._pending_mfa_token = None
+            # Reset auth failure tracking on successful MFA
+            self._last_auth_failure = None
+            self._auth_retry_count = 0
+            return True
+        except AuthenticationError as e:
+            _LOGGER.error("Pending MFA completion failed: %s", e)
+            # Don't clear pending state on failure - allow retry
+            return False
+
+    def clear_auth_data(self) -> None:
+        """Clear sensitive authentication data."""
+        self._access_token = None
+        self._refresh_token = None
+        self._password = None
+        self._pending_mfa_token = None
+        # Keep stored email/password for re-auth, but clear temp password and MFA state
+        # Only clear if explicitly called (not during normal refresh)
+
     async def send_saved_sounds_request(self, baby_uid: str) -> None:
         """Request available sound list from device."""
         connection_key = f"{baby_uid}_speaker"
@@ -683,11 +907,39 @@ class SoundLightAPI:
             _LOGGER.error("Failed to send sounds request: %s", e)
 
     async def close(self) -> None:
-        """Close all connections."""
-        for websocket in list(self._websockets.values()):
+        """Close all connections and clean up resources."""
+        # Close all websockets
+        websocket_close_tasks = []
+        for connection_key, websocket in list(self._websockets.items()):
             try:
-                await websocket.close()
+                if not websocket.closed:
+                    websocket_close_tasks.append(websocket.close())
             except Exception as e:
-                _LOGGER.debug("Error closing websocket: %s", e)
+                _LOGGER.debug(
+                    "Error preparing websocket close for %s: %s", connection_key, e
+                )
 
+        # Wait for all websockets to close with timeout
+        if websocket_close_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*websocket_close_tasks, return_exceptions=True),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Websocket close timeout - some connections may not have closed gracefully"
+                )
+            except Exception as e:
+                _LOGGER.debug("Error during websocket cleanup: %s", e)
+
+        # Clear websocket references
         self._websockets.clear()
+
+        # Clear device state
+        self._device_state.clear()
+
+        # Clear auth data for security
+        self.clear_auth_data()
+        self._stored_email = None
+        self._stored_password = None

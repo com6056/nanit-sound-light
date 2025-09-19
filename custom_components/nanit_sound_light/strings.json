@@ -15,6 +15,13 @@
         "data": {
           "mfa_code": "Verification Code"
         }
+      },
+      "reauth_mfa": {
+        "title": "Re-authentication Required",
+        "description": "Your session has expired and MFA is required. Enter the verification code sent to {email}",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
       }
     },
     "error": {
@@ -22,6 +29,8 @@
       "invalid_auth": "Invalid email or password. Please check your credentials.",
       "invalid_mfa": "Invalid verification code. Please try again.",
       "no_devices": "No Sound + Light devices found on your account.",
+      "reauth_failed": "Re-authentication failed. Please try deleting and re-adding the integration.",
+      "no_mfa_pending": "No MFA authentication pending.",
       "unknown": "An unexpected error occurred. Please try again."
     }
   }

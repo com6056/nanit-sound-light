@@ -41,6 +41,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._email: str | None = None
         self._password: str | None = None
         self._mfa_token: str | None = None
+        self._reauth_entry: config_entries.ConfigEntry | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -147,4 +148,78 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=STEP_MFA_DATA_SCHEMA,
             errors=errors,
             description_placeholders={"email": self._email},
+        )
+
+    async def async_step_reauth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle reauth flow when MFA is required for re-authentication."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+
+        if not self._reauth_entry:
+            return self.async_abort(reason="reauth_failed")
+
+        # Get the coordinator to check if MFA is pending
+        from .const import DOMAIN
+
+        coordinator = self.hass.data[DOMAIN].get(self._reauth_entry.entry_id)
+
+        if not coordinator or not coordinator.api.is_mfa_pending():
+            return self.async_abort(reason="no_mfa_pending")
+
+        # Set the unique ID for this reauth flow to prevent duplicates
+        await self.async_set_unique_id(self._reauth_entry.unique_id)
+        self._abort_if_unique_id_configured()
+
+        # Show MFA form for reauth
+        return await self.async_step_reauth_mfa()
+
+    async def async_step_reauth_mfa(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle MFA input during reauth."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            mfa_code = user_input[CONF_MFA_CODE]
+
+            # Get coordinator
+            from .const import DOMAIN
+
+            coordinator = self.hass.data[DOMAIN].get(self._reauth_entry.entry_id)
+
+            if coordinator:
+                try:
+                    # Complete pending MFA authentication
+                    success = await coordinator.api.complete_pending_mfa(mfa_code)
+
+                    if success:
+                        # Clear the persistent notification
+                        self.hass.components.persistent_notification.async_dismiss(
+                            f"nanit_mfa_{self._reauth_entry.entry_id}"
+                        )
+
+                        # Trigger coordinator refresh to resume normal operation
+                        await coordinator.async_request_refresh()
+                        return self.async_create_entry(
+                            title="Reauth successful", data={}
+                        )
+                    else:
+                        errors["base"] = "invalid_mfa"
+
+                except Exception as e:
+                    _LOGGER.error("Reauth MFA verification failed: %s", e)
+                    errors["base"] = "invalid_mfa"
+            else:
+                errors["base"] = "reauth_failed"
+
+        return self.async_show_form(
+            step_id="reauth_mfa",
+            data_schema=STEP_MFA_DATA_SCHEMA,
+            errors=errors,
+            description_placeholders={
+                "email": self._reauth_entry.data.get(CONF_EMAIL, "")
+            },
         )

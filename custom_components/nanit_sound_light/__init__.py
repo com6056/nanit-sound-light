@@ -53,6 +53,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = hass.data[DOMAIN][entry.entry_id]
     await coordinator.async_close()
 
+    # Clear any pending MFA notifications
+    hass.components.persistent_notification.async_dismiss(f"nanit_mfa_{entry.entry_id}")
+
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
