@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 from typing import Any, Dict, List
 
@@ -66,16 +67,19 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Update data via library."""
+        start_time = time.time()
         try:
             # Ensure authentication is valid (will refresh or re-authenticate if needed)
             if not await self.api.ensure_authenticated():
                 # If ensure_authenticated returns False, it means we're in a retry backoff
                 # or MFA is pending - don't raise an exception immediately
                 if self.api.is_mfa_pending():
-                    _LOGGER.info("MFA authentication pending, using cached data")
+                    _LOGGER.info(
+                        "🔐 MFA authentication pending - integration paused until user completes verification"
+                    )
                 else:
                     _LOGGER.warning(
-                        "Authentication not available, using cached data if any"
+                        "⚠️ Authentication unavailable (rate limited or failed) - using cached data"
                     )
 
                 if hasattr(self, "data") and self.data:
@@ -92,7 +96,11 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                 # Connect to all devices
                 for device in self._devices:
                     await self.api.connect_device(device)
-                    _LOGGER.info("Connected to device: %s", device["speaker_name"])
+                    _LOGGER.info(
+                        "🔗 Connected to device: %s (%s)",
+                        device["speaker_name"],
+                        device["speaker_uid"][:8] + "...",
+                    )
 
                     # Also request available sounds after connection
                     baby_uid = device["baby_uid"]
@@ -134,13 +142,18 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                             ):
                                 raw_state = current_state
                                 _LOGGER.info(
-                                    "Got device state for %s after %.1fs: power=%s, brightness=%.3f, volume=%.3f, sound=%s",
-                                    baby_uid,
+                                    "📊 Device %s state acquired in %.1fs: power=%s, brightness=%.1f%%, volume=%.1f%%, sound='%s'",
+                                    device["speaker_name"],
                                     (attempt + 1) * 0.5,
-                                    raw_state.get("is_on", False),
-                                    raw_state.get("brightness", 0),
-                                    raw_state.get("volume", 0),
-                                    raw_state.get("current_sound", "None"),
+                                    "ON" if raw_state.get("is_on", False) else "OFF",
+                                    raw_state.get("brightness", 0) * 100,
+                                    raw_state.get("volume", 0) * 100,
+                                    raw_state.get("current_sound", "None")[:20]
+                                    + (
+                                        "..."
+                                        if len(raw_state.get("current_sound", "")) > 20
+                                        else ""
+                                    ),
                                 )
                                 break
 
@@ -149,16 +162,16 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                             if attempt > 0:  # Give it at least one attempt
                                 raw_state = current_state
                                 _LOGGER.info(
-                                    "Got device response for %s after %.1fs (messageId=%s)",
-                                    baby_uid,
-                                    (attempt + 1) * 0.5,
+                                    "📡 Device %s responding (message_id=%s, attempt=%.1fs)",
+                                    device["speaker_name"],
                                     current_state.get("message_id"),
+                                    (attempt + 1) * 0.5,
                                 )
                                 break
                     else:
                         _LOGGER.warning(
-                            "No device response received for %s after 10s, device may be offline",
-                            baby_uid,
+                            "⚠️ Device %s unresponsive after 10s - may be offline or in sleep mode",
+                            device["speaker_name"],
                         )
                         raw_state = {}
 
@@ -189,17 +202,34 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                     }
 
                     _LOGGER.debug(
-                        "Updated device %s state: brightness=%.3f, volume=%.3f, power=%s, sound=%s",
+                        "✅ Updated %s: brightness=%.1f%%, volume=%.1f%%, power=%s, sound='%s'",
                         device["speaker_name"],
-                        parsed_state.get("brightness", 0.0),
-                        parsed_state.get("volume", 0.0),
-                        parsed_state.get("is_on", False),
-                        parsed_state.get("current_sound", "None"),
+                        parsed_state.get("brightness", 0.0) * 100,
+                        parsed_state.get("volume", 0.0) * 100,
+                        "ON" if parsed_state.get("is_on", False) else "OFF",
+                        parsed_state.get("current_sound", "None")[:15]
+                        + (
+                            "..."
+                            if len(parsed_state.get("current_sound", "")) > 15
+                            else ""
+                        ),
                     )
 
                 except Exception as e:
-                    _LOGGER.error("Failed to update device %s: %s", baby_uid, e)
+                    error_type = type(e).__name__
+                    _LOGGER.error(
+                        "❌ Failed to update device %s (%s): %s",
+                        device["speaker_name"],
+                        error_type,
+                        e,
+                    )
 
+            update_duration = time.time() - start_time
+            _LOGGER.debug(
+                "📈 Update cycle completed in %.2fs for %d devices",
+                update_duration,
+                len(self._devices),
+            )
             return {"devices": self._device_states}
 
         except AuthenticationError as e:
@@ -231,13 +261,19 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
     async def _trigger_mfa_reauth(self) -> None:
         """Trigger MFA re-authentication flow via Home Assistant."""
-        _LOGGER.info("Triggering MFA re-authentication flow")
+        _LOGGER.info(
+            "🔐 MFA re-authentication required - creating user notification and reauth flow"
+        )
 
         # Create a persistent notification to inform the user
-        self.hass.components.persistent_notification.async_create(
-            message="Your Nanit Sound + Light integration requires MFA verification to continue. Please complete the authentication flow.",
-            title="Nanit Authentication Required",
-            notification_id=f"nanit_mfa_{self.config_entry.entry_id}",
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "message": "Your Nanit Sound + Light integration requires MFA verification to continue. Please complete the authentication flow.",
+                "title": "Nanit Authentication Required",
+                "notification_id": f"nanit_mfa_{self.config_entry.entry_id}",
+            },
         )
 
         # Create a reauth flow to prompt user for MFA
@@ -261,7 +297,19 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
     async def async_send_control_command(self, baby_uid: str, **kwargs) -> None:
         """Send control command to device using protobuf."""
         try:
-            _LOGGER.debug("Sending control command for %s: %s", baby_uid, kwargs)
+            _LOGGER.debug(
+                "🎮 Sending command to %s: %s",
+                (
+                    self._devices[0]["speaker_name"]
+                    if self._devices
+                    else baby_uid[:8] + "..."
+                ),
+                (
+                    {k: v for k, v in kwargs.items() if k != "color"}
+                    if "color" in kwargs
+                    else kwargs
+                ),
+            )
 
             await self.api.send_control_command(baby_uid, **kwargs)
 
@@ -298,7 +346,13 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             await self._ping_device_for_state(baby_uid)
 
         except Exception as e:
-            _LOGGER.error("Failed to send control command: %s", e)
+            error_type = type(e).__name__
+            _LOGGER.error(
+                "❌ Control command failed for %s (%s): %s",
+                baby_uid[:8] + "...",
+                error_type,
+                e,
+            )
             raise
 
     def get_last_color(self, baby_uid: str) -> Dict[str, Any] | None:

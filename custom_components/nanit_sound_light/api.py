@@ -68,7 +68,7 @@ class SoundLightAPI:
     async def authenticate(
         self, email: str, password: str, refresh_token: Optional[str] = None
     ) -> None:
-        """Authenticate with Nanit API (try refresh token first like working implementation)."""
+        """Authenticate with Nanit API (try refresh token first if available)."""
         # Store credentials for potential re-authentication
         self._stored_email = email
         self._stored_password = password
@@ -88,13 +88,32 @@ class SoundLightAPI:
             headers = {"Content-Type": "application/json", "nanit-api-version": "1"}
 
             _LOGGER.debug("Initial auth request to: %s", NANIT_AUTH_URL)
-            _LOGGER.debug("Auth data: %s", {**auth_data, "password": "***"})
+            _LOGGER.debug(
+                "Auth data: %s",
+                {
+                    **auth_data,
+                    "password": "***",
+                    "mfa_token": "***" if "mfa_token" in auth_data else None,
+                },
+            )
 
             async with self._session.post(
                 NANIT_AUTH_URL, json=auth_data, headers=headers
             ) as response:
                 response_text = await response.text()
-                _LOGGER.debug(f"Login response: {response.status} - {response_text}")
+                _LOGGER.debug(
+                    "Login response: status=%d, length=%d bytes",
+                    response.status,
+                    len(response_text),
+                )
+
+                # Only log response details at debug level to avoid exposing tokens
+                sanitized_response = (
+                    response_text[:200] + "..."
+                    if len(response_text) > 200
+                    else response_text
+                )
+                _LOGGER.debug("Login response preview: %s", sanitized_response)
 
                 if response.status == 201:
                     # Successful login without MFA
@@ -114,7 +133,10 @@ class SoundLightAPI:
                         # Reset auth failure tracking on success
                         self._last_auth_failure = None
                         self._auth_retry_count = 0
-                        _LOGGER.info("Authentication successful")
+                        _LOGGER.info(
+                            "Authentication successful for user: %s",
+                            email.split("@")[0] + "@***",
+                        )
                         return {"success": True}
 
                 elif response.status in [200, 482]:
@@ -124,11 +146,14 @@ class SoundLightAPI:
 
                     mfa_token = response_data.get("mfa_token")
                     if mfa_token:
-                        _LOGGER.info("MFA verification required")
+                        _LOGGER.info(
+                            "MFA verification required for user: %s",
+                            email.split("@")[0] + "@***",
+                        )
                         raise MfaRequiredError("MFA code required", mfa_token)
 
                 raise AuthenticationError(
-                    f"Login failed: {response.status} - {response_text}"
+                    f"Login failed: {response.status} - {response_text[:100] + ('...' if len(response_text) > 100 else '')}"
                 )
 
         except MfaRequiredError:
@@ -139,23 +164,29 @@ class SoundLightAPI:
             aiohttp.ServerTimeoutError,
             asyncio.TimeoutError,
         ) as e:
-            _LOGGER.error("Network error during authentication: %s", e)
+            error_type = type(e).__name__
+            _LOGGER.error(
+                "Network error during authentication (%s): %s - Check internet connection and Nanit server status",
+                error_type,
+                e,
+            )
             raise AuthenticationError(f"Network error during login: {e}")
         except Exception as e:
-            _LOGGER.error("Authentication failed: %s", e)
+            error_type = type(e).__name__
+            _LOGGER.error("Unexpected authentication error (%s): %s", error_type, e)
             raise AuthenticationError(f"Login failed: {e}")
 
     async def complete_mfa_authentication(
         self, email: str, password: str, mfa_token: str, mfa_code: str
     ) -> None:
-        """Complete MFA authentication with the provided code (exact match to working implementation)."""
+        """Complete MFA authentication with the provided code."""
         try:
-            # Clean up the MFA code exactly like working implementation
+            # Clean up the MFA code by removing quotes and whitespace
             mfa_code = mfa_code.strip()
             if mfa_code.startswith('"') and mfa_code.endswith('"'):
                 mfa_code = mfa_code[1:-1]
 
-            # Send MFA code to verify - exact same as working implementation
+            # Send MFA code to verify authentication
             mfa_data = {
                 "email": email,
                 "password": password,
@@ -166,14 +197,18 @@ class SoundLightAPI:
             headers = {"Content-Type": "application/json", "nanit-api-version": "1"}
 
             _LOGGER.debug(
-                "MFA verification request data: %s", {**mfa_data, "password": "***"}
+                "MFA verification request for user: %s", email.split("@")[0] + "@***"
             )
 
             async with self._session.post(
                 NANIT_AUTH_URL, json=mfa_data, headers=headers
             ) as response:
                 response_text = await response.text()
-                _LOGGER.debug(f"MFA response: {response.status} - {response_text}")
+                _LOGGER.debug(
+                    "MFA response: status=%d, success=%s",
+                    response.status,
+                    response.status == 201,
+                )
 
                 if response.status == 201:
                     response_data = await response.json()
@@ -196,32 +231,44 @@ class SoundLightAPI:
                     # Reset auth failure tracking on successful MFA
                     self._last_auth_failure = None
                     self._auth_retry_count = 0
-                    _LOGGER.info("MFA verification successful")
-                else:
-                    raise AuthenticationError(
-                        f"MFA verification failed: {response.status} - {response_text}"
+                    _LOGGER.info(
+                        "MFA verification successful for user: %s",
+                        email.split("@")[0] + "@***",
                     )
+                else:
+                    error_msg = f"MFA verification failed: {response.status}"
+                    if response.status == 401:
+                        error_msg += " - Invalid MFA code provided"
+                    elif response.status >= 500:
+                        error_msg += " - Server error, please try again"
+                    raise AuthenticationError(error_msg)
 
         except (
             aiohttp.ClientError,
             aiohttp.ServerTimeoutError,
             asyncio.TimeoutError,
         ) as e:
-            _LOGGER.error("Network error during MFA verification: %s", e)
+            error_type = type(e).__name__
+            _LOGGER.error(
+                "Network error during MFA verification (%s): %s", error_type, e
+            )
             raise AuthenticationError(f"Network error during MFA verification: {e}")
         except Exception as e:
-            _LOGGER.error("MFA verification failed: %s", e)
+            error_type = type(e).__name__
+            _LOGGER.error("MFA verification failed (%s): %s", error_type, e)
             raise AuthenticationError(f"MFA verification failed: {e}")
 
     async def _refresh_auth(self) -> bool:
-        """Refresh authentication token like working implementation."""
+        """Refresh authentication token using stored refresh token."""
         if not self._refresh_token:
+            _LOGGER.debug("No refresh token available for token refresh")
             return False
 
         refresh_data = {"refresh_token": self._refresh_token}
 
         try:
             refresh_url = f"{NANIT_API_BASE}/tokens/refresh"
+            _LOGGER.debug("Attempting token refresh")
             async with self._session.post(refresh_url, json=refresh_data) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -238,16 +285,23 @@ class SoundLightAPI:
                     # Reset auth failure tracking on successful refresh
                     self._last_auth_failure = None
                     self._auth_retry_count = 0
-                    _LOGGER.info("Token refresh successful")
+                    _LOGGER.info("Token refresh successful - authentication renewed")
                     return True
                 elif response.status == 404:
-                    _LOGGER.debug("Refresh token expired, need to re-login")
+                    _LOGGER.info("Refresh token expired - re-authentication required")
                     # Clear expired tokens
                     self._refresh_token = None
                     self._access_token = None
+                elif response.status == 401:
+                    _LOGGER.warning(
+                        "Refresh token invalid - re-authentication required"
+                    )
+                    self._refresh_token = None
+                    self._access_token = None
                 else:
-                    _LOGGER.debug(
-                        "Token refresh failed with status: %d", response.status
+                    _LOGGER.warning(
+                        "Token refresh failed with status: %d - will retry with full auth",
+                        response.status,
                     )
         except (
             aiohttp.ClientError,
@@ -267,22 +321,24 @@ class SoundLightAPI:
             return True
 
         # Calculate time since last failure
-        time_since_failure = (
-            time.time() - self._last_auth_failure
-        )  # If we've hit max retries, require a longer wait period (30 minutes)
+        time_since_failure = time.time() - self._last_auth_failure
+
+        # If we've hit max retries, require a longer wait period (30 minutes)
         if self._auth_retry_count >= self._max_retry_count:
             if time_since_failure < 1800:  # 30 minutes
+                remaining_minutes = (1800 - time_since_failure) / 60
                 _LOGGER.warning(
-                    "Authentication retry limit reached (%d attempts). "
-                    "Will retry after 30 minutes to prevent MFA spam. "
-                    "Time remaining: %.1f minutes",
+                    "🔒 Authentication retry limit reached (%d attempts). "
+                    "Waiting %.1f more minutes to prevent MFA spam and protect your account",
                     self._auth_retry_count,
-                    (1800 - time_since_failure) / 60,
+                    remaining_minutes,
                 )
                 return False
             else:
                 # Reset retry count after waiting period
-                _LOGGER.info("Retry wait period expired, resetting auth retry count")
+                _LOGGER.info(
+                    "🔓 Authentication retry wait period expired - resuming normal authentication"
+                )
                 self._auth_retry_count = 0
                 self._last_auth_failure = None
                 return True
@@ -306,6 +362,19 @@ class SoundLightAPI:
         """Record an authentication failure for rate limiting."""
         self._last_auth_failure = time.time()
         self._auth_retry_count += 1
+
+        next_retry_info = (
+            "30 minutes"
+            if self._auth_retry_count >= self._max_retry_count
+            else f"{[30, 120, 300][min(self._auth_retry_count - 1, 2)]} seconds"
+        )
+
+        _LOGGER.warning(
+            "⚠️  Authentication attempt %d/%d failed. Next retry allowed in %s",
+            self._auth_retry_count,
+            self._max_retry_count,
+            next_retry_info,
+        )
 
     async def ensure_authenticated(self) -> bool:
         """Ensure we have a valid access token, refreshing if needed."""

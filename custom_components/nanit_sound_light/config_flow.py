@@ -65,8 +65,14 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 devices = await api.get_sound_light_devices()
 
                 if not devices:
+                    _LOGGER.warning(
+                        "🔍 No Sound + Light devices found for user account"
+                    )
                     errors["base"] = "no_devices"
                 else:
+                    _LOGGER.info(
+                        "🎉 Successfully found %d Sound + Light device(s)", len(devices)
+                    )
                     # Store refresh token if we got one
                     data = {
                         CONF_EMAIL: self._email,
@@ -83,13 +89,15 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except MfaRequiredError as mfa_error:
                 # Store MFA token and proceed to MFA step
                 self._mfa_token = mfa_error.mfa_token
+                _LOGGER.info("🔐 MFA verification required for user setup")
                 return await self.async_step_mfa()
 
             except AuthenticationError as e:
-                _LOGGER.error("Authentication failed: %s", e)
+                _LOGGER.error("🚫 Authentication failed during setup: %s", e)
                 errors["base"] = "invalid_auth"
             except Exception as e:
-                _LOGGER.error("Unexpected error: %s", e)
+                error_type = type(e).__name__
+                _LOGGER.error("💥 Unexpected setup error (%s): %s", error_type, e)
                 errors["base"] = "cannot_connect"
 
         return self.async_show_form(
@@ -121,9 +129,14 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 devices = await api.get_sound_light_devices()
 
                 if not devices:
+                    _LOGGER.warning("🔍 No devices found after MFA verification")
                     errors["base"] = "no_devices"
                 else:
-                    # Store refresh token like working implementation
+                    _LOGGER.info(
+                        "🎉 MFA verification successful - found %d device(s)",
+                        len(devices),
+                    )
+                    # Store refresh token for future authentication
                     data = {
                         CONF_EMAIL: self._email,
                         CONF_PASSWORD: self._password,
@@ -137,10 +150,11 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
 
             except AuthenticationError as e:
-                _LOGGER.error("MFA verification failed: %s", e)
+                _LOGGER.error("🚫 MFA verification failed: %s", e)
                 errors["base"] = "invalid_mfa"
             except Exception as e:
-                _LOGGER.error("Unexpected error during MFA: %s", e)
+                error_type = type(e).__name__
+                _LOGGER.error("💥 Unexpected error during MFA (%s): %s", error_type, e)
                 errors["base"] = "cannot_connect"
 
         return self.async_show_form(
@@ -196,9 +210,16 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     success = await coordinator.api.complete_pending_mfa(mfa_code)
 
                     if success:
+                        _LOGGER.info(
+                            "🎉 MFA re-authentication successful - integration resumed"
+                        )
                         # Clear the persistent notification
-                        self.hass.components.persistent_notification.async_dismiss(
-                            f"nanit_mfa_{self._reauth_entry.entry_id}"
+                        await self.hass.services.async_call(
+                            "persistent_notification",
+                            "dismiss",
+                            {
+                                "notification_id": f"nanit_mfa_{self._reauth_entry.entry_id}"
+                            },
                         )
 
                         # Trigger coordinator refresh to resume normal operation
@@ -207,10 +228,13 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             title="Reauth successful", data={}
                         )
                     else:
+                        _LOGGER.warning(
+                            "🚫 MFA re-authentication failed - invalid code"
+                        )
                         errors["base"] = "invalid_mfa"
 
                 except Exception as e:
-                    _LOGGER.error("Reauth MFA verification failed: %s", e)
+                    _LOGGER.error("💥 Reauth MFA verification failed: %s", e)
                     errors["base"] = "invalid_mfa"
             else:
                 errors["base"] = "reauth_failed"
