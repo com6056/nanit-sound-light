@@ -469,8 +469,6 @@ class SoundLightAPI:
 
         try:
             # Create SSL context in executor to avoid blocking the event loop
-            import asyncio
-
             loop = asyncio.get_event_loop()
             ssl_context = await loop.run_in_executor(None, ssl.create_default_context)
 

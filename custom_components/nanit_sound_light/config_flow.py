@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -176,11 +177,24 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="reauth_failed")
 
         # Get the coordinator to check if MFA is pending
-        from .const import DOMAIN
+        # The coordinator might not be stored yet if the reauth flow was triggered
+        # during setup. Give it a moment and check a few times.
+        coordinator = None
+        for attempt in range(5):  # Try for up to 2.5 seconds
+            if DOMAIN in self.hass.data:
+                coordinator = self.hass.data[DOMAIN].get(self._reauth_entry.entry_id)
+                if coordinator:
+                    break
+            _LOGGER.debug(
+                "🔄 Waiting for coordinator to be available (attempt %d/5)", attempt + 1
+            )
+            await asyncio.sleep(0.5)
 
-        coordinator = self.hass.data[DOMAIN].get(self._reauth_entry.entry_id)
+        if not coordinator:
+            _LOGGER.warning("🚫 Coordinator not found after waiting - aborting reauth")
+            return self.async_abort(reason="reauth_failed")
 
-        if not coordinator or not coordinator.api.is_mfa_pending():
+        if not coordinator.api.is_mfa_pending():
             return self.async_abort(reason="no_mfa_pending")
 
         # Set the unique ID for this reauth flow to prevent duplicates
@@ -199,10 +213,20 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             mfa_code = user_input[CONF_MFA_CODE]
 
-            # Get coordinator
-            from .const import DOMAIN
-
-            coordinator = self.hass.data[DOMAIN].get(self._reauth_entry.entry_id)
+            # Get coordinator with retry logic
+            coordinator = None
+            for attempt in range(5):  # Try for up to 2.5 seconds
+                if DOMAIN in self.hass.data:
+                    coordinator = self.hass.data[DOMAIN].get(
+                        self._reauth_entry.entry_id
+                    )
+                    if coordinator:
+                        break
+                _LOGGER.debug(
+                    "🔄 Waiting for coordinator during MFA completion (attempt %d/5)",
+                    attempt + 1,
+                )
+                await asyncio.sleep(0.5)
 
             if coordinator:
                 try:
@@ -224,9 +248,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                         # Trigger coordinator refresh to resume normal operation
                         await coordinator.async_request_refresh()
-                        return self.async_create_entry(
-                            title="Reauth successful", data={}
-                        )
+                        return self.async_abort(reason="reauth_successful")
                     else:
                         _LOGGER.warning(
                             "🚫 MFA re-authentication failed - invalid code"

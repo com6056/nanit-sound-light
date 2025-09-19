@@ -56,7 +56,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         # Set up token update callback
         self.api.set_token_update_callback(self.update_stored_refresh_token)
 
-        # Set up MFA required callback
+        # Set up MFA callback immediately - we need this for token refresh scenarios
         self.api.set_mfa_required_callback(self._trigger_mfa_reauth)
 
         self._devices: List[Dict[str, Any]] = []
@@ -84,6 +84,13 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
                 if hasattr(self, "data") and self.data:
                     return self.data
+
+                # During initial setup or when no cached data exists, we need to handle MFA differently
+                # If MFA is pending, we should return a minimal state to prevent constant retries
+                if self.api.is_mfa_pending():
+                    # Return a minimal state that indicates MFA is needed
+                    return {"mfa_required": True, "devices": {}}
+
                 raise UpdateFailed("Authentication failed and no cached data available")
 
             # Get device list if needed

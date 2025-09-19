@@ -7,6 +7,10 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
+
+from .const import DOMAIN
+from .coordinator import NanitSoundLightCoordinator
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,14 +29,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info("🚀 Setting up Nanit Sound + Light integration v%s", "1.0.0")
 
     # Initialize coordinator
-    from .coordinator import NanitSoundLightCoordinator
-    from .const import DOMAIN
-
     coordinator = NanitSoundLightCoordinator(hass, entry)
 
     # Fetch initial data
     _LOGGER.debug("⚡ Performing initial data refresh...")
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as e:
+        # Check if this is an MFA-related issue during initial setup
+        if coordinator.api.is_mfa_pending():
+            _LOGGER.info(
+                "🔐 MFA required during initial setup - please reconfigure integration"
+            )
+            # Create a repair issue to guide the user
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                f"mfa_required_{entry.entry_id}",
+                is_fixable=True,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="mfa_required_setup",
+                data={"entry_id": entry.entry_id},
+            )
+            return False
+        else:
+            _LOGGER.error("💥 Failed to setup integration: %s", e)
+            return False
 
     # Store coordinator
     hass.data.setdefault(DOMAIN, {})
@@ -49,8 +71,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.info("🔄 Unloading Nanit Sound + Light integration")
-
-    from .const import DOMAIN
 
     # Close coordinator and API connections
     coordinator = hass.data[DOMAIN][entry.entry_id]

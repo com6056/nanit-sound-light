@@ -31,6 +31,7 @@
       "no_devices": "No Sound + Light devices found on your account.",
       "reauth_failed": "Re-authentication failed. Please try deleting and re-adding the integration.",
       "no_mfa_pending": "No MFA authentication pending.",
+      "integration_not_ready": "Integration is still setting up. Please wait a moment and try again.",
       "unknown": "An unexpected error occurred. Please try again."
     }
   }
