@@ -18,8 +18,8 @@ jobs:
 
       - name: Install protoc
         run: |
-          # Install specific version of protoc to match Homebrew version
-          PROTOC_VERSION="32.1"
+          # Install compatible version of protoc for Home Assistant environments (v29.x)
+          PROTOC_VERSION="29.5"
           curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
           unzip protoc-${PROTOC_VERSION}-linux-x86_64.zip -d $HOME/.local
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -61,3 +61,4 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          ignore: brands

@@ -44,7 +44,28 @@ check_tool() {
 print_step "Checking required tools..."
 check_tool "ruff" "brew install ruff"
 check_tool "prettier" "brew install prettier"
-check_tool "protoc" "brew install protobuf"
+
+# Check for compatible protoc version
+if command -v "/opt/homebrew/opt/protobuf@29/bin/protoc" &> /dev/null; then
+    PROTOC_PATH="/opt/homebrew/opt/protobuf@29/bin/protoc"
+    PROTOC_VERSION=$($PROTOC_PATH --version | grep -o '[0-9]\+\.[0-9]\+')
+    print_success "Using compatible protoc v$PROTOC_VERSION (Home Assistant compatible)"
+elif command -v "protoc" &> /dev/null; then
+    PROTOC_PATH="protoc"
+    PROTOC_VERSION=$(protoc --version | grep -o '[0-9]\+\.[0-9]\+')
+    MAJOR_VERSION=$(echo $PROTOC_VERSION | cut -d. -f1)
+    if [ "$MAJOR_VERSION" -gt 30 ]; then
+        echo ""
+        print_error "⚠️  Warning: protoc version $PROTOC_VERSION may generate code incompatible with Home Assistant"
+        echo "   Consider installing: brew install protobuf@29"
+        echo "   This may cause runtime version mismatch errors in Home Assistant"
+        echo ""
+    fi
+else
+    print_error "protoc is not installed. Please install it first."
+    echo "  For protoc: brew install protobuf@29 (recommended) or brew install protobuf"
+    exit 1
+fi
 
 # 1. Format Python code
 print_step "Running ruff format..."
@@ -85,7 +106,7 @@ if [ ! -f "$PROTO_FILE" ]; then
 fi
 
 # Generate new protobuf file
-if protoc --python_out="$PROTO_DIR" --proto_path="$PROTO_DIR" "$PROTO_FILE"; then
+if $PROTOC_PATH --python_out="$PROTO_DIR" --proto_path="$PROTO_DIR" "$PROTO_FILE"; then
     print_success "Protobuf generation completed"
 else
     print_error "Protobuf generation failed"

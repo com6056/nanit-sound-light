@@ -751,11 +751,33 @@ class SoundLightAPI:
         except Exception as e:
             _LOGGER.error("Failed to send status request: %s", e)
 
+    def _is_websocket_closed(self, websocket) -> bool:
+        """Check if websocket is closed, handling different websocket library versions."""
+        if websocket is None:
+            return True
+
+        try:
+            # Try the standard method first
+            if hasattr(websocket, "closed"):
+                return websocket.closed
+
+            # For newer websockets library versions, check state
+            if hasattr(websocket, "state"):
+                from websockets.protocol import State
+
+                return websocket.state in (State.CLOSED, State.CLOSING)
+
+            # Fallback: assume connection is open if we can't determine
+            return False
+        except Exception:
+            # If we can't determine the state, assume it's closed for safety
+            return True
+
     def is_websocket_connected(self, baby_uid: str) -> bool:
         """Check if WebSocket connection is healthy."""
         connection_key = f"{baby_uid}_speaker"
         websocket = self._websockets.get(connection_key)
-        return websocket is not None and not websocket.closed
+        return websocket is not None and not self._is_websocket_closed(websocket)
 
     async def ensure_websocket_connection(self, baby_uid: str) -> bool:
         """Ensure WebSocket connection is available and healthy."""
@@ -1126,6 +1148,14 @@ class SoundLightAPI:
                 Message,
                 Request,
             )
+        except ImportError as e:
+            if "incompatible Protobuf" in str(e):
+                _LOGGER.error(
+                    "Protobuf version mismatch detected. This integration was compiled with "
+                    "a newer protobuf version than your Home Assistant runtime. "
+                    "Please report this issue at: https://github.com/com6056/nanit-sound-light/issues"
+                )
+            raise e
 
             # Request saved sounds list (field 7 in GetSettings)
             get_settings = GetSettings()
@@ -1158,7 +1188,7 @@ class SoundLightAPI:
         websocket_close_tasks = []
         for connection_key, websocket in list(self._websockets.items()):
             try:
-                if not websocket.closed:
+                if not self._is_websocket_closed(websocket):
                     websocket_close_tasks.append(websocket.close())
             except Exception as e:
                 _LOGGER.debug(
