@@ -30,9 +30,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Get version from manifest to avoid hardcoding
     manifest_path = Path(__file__).parent / "manifest.json"
     try:
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-            version = manifest.get("version", "unknown")
+        # Use executor to avoid blocking the event loop
+        def _load_manifest():
+            with open(manifest_path) as f:
+                return json.load(f)
+
+        manifest = await hass.async_add_executor_job(_load_manifest)
+        version = manifest.get("version", "unknown")
     except Exception:
         version = "unknown"
 
