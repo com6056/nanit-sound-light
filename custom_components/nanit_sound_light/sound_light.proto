@@ -72,5 +72,3 @@ message Status {
     optional float temperature = 2;         // Temperature sensor
     optional float humidity = 3;            // Humidity sensor
 }
-
-

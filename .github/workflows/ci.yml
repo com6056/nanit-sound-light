@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install protoc
+        run: |
+          # Install specific version of protoc to match Homebrew version
+          PROTOC_VERSION="32.1"
+          curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          unzip protoc-${PROTOC_VERSION}-linux-x86_64.zip -d $HOME/.local
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          rm protoc-${PROTOC_VERSION}-linux-x86_64.zip
+
+      - name: Format
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: format --check --diff
+
+      - name: Lint
+        uses: astral-sh/ruff-action@v3
+
+      - name: Prettier
+        uses: creyD/prettier_action@v4.6
+        with:
+          dry: True
+          prettier_options: --check **/*.{json,md,yml}
+
+      - name: Check protobuf
+        run: |
+          # Regenerate protobuf file
+          protoc --python_out=custom_components/nanit_sound_light --proto_path=custom_components/nanit_sound_light custom_components/nanit_sound_light/sound_light.proto
+
+          # Check if it matches the committed version
+          if ! git diff --quiet custom_components/nanit_sound_light/sound_light_pb2.py; then
+            echo "❌ Protobuf file is out of date!"
+            echo "Please run './ci.sh' to regenerate and commit the changes."
+            echo "Note: Protobuf compiler versions may differ between local and CI environments"
+            git diff custom_components/nanit_sound_light/sound_light_pb2.py
+            exit 1
+          fi
+          echo "✅ Protobuf file is up to date"
+
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@master
+
+      - name: HACS
+        uses: hacs/action@main
+        with:
+          category: integration

@@ -7,14 +7,13 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import SoundLightAPI, AuthenticationError, MfaRequiredError
-from .const import DOMAIN, CONF_MFA_CODE
+from .api import AuthenticationError, MfaRequiredError, SoundLightAPI
+from .const import CONF_MFA_CODE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 

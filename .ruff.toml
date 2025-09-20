@@ -1,0 +1,30 @@
+# Ruff configuration for Nanit Sound + Light integration
+
+# Line length setting (global)
+line-length = 88
+
+[lint]
+# Select the linting rules to apply
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "T20"]
+
+# Ignore specific rules
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+    "N806",  # Variable in function should be lowercase (protobuf generates uppercase)
+    "N803",  # Argument name should be lowercase (protobuf compatibility)
+    "B904",  # Exception chaining - would require larger changes
+]
+
+# Exclude generated protobuf files from linting and formatting
+exclude = [
+    "custom_components/nanit_sound_light/sound_light_pb2.py"
+]
+
+[format]
+# Exclude generated protobuf files from formatting
+exclude = [
+    "custom_components/nanit_sound_light/sound_light_pb2.py"
+]
+
+# Quote style
+quote-style = "double"

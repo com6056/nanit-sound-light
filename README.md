@@ -54,13 +54,13 @@ If your session expires, the integration will automatically handle re-authentica
 
 ## Supported Entities
 
-| Entity Type | Description |
-|-------------|-------------|
-| **Light** | Brightness (0-100%) and color control (HSB) |
-| **Switch** | Device power on/off |
-| **Number** | Volume control (0-100%) |
-| **Select** | Sound selection (No sound + 11 built-in sounds) |
-| **Sensor** | Temperature and humidity monitoring |
+| Entity Type | Description                                     |
+| ----------- | ----------------------------------------------- |
+| **Light**   | Brightness (0-100%) and color control (HSB)     |
+| **Switch**  | Device power on/off                             |
+| **Number**  | Volume control (0-100%)                         |
+| **Select**  | Sound selection (No sound + 11 built-in sounds) |
+| **Sensor**  | Temperature and humidity monitoring             |
 
 ## Why Sound + Light Only?
 
@@ -87,16 +87,17 @@ Then restart Home Assistant and check **Settings** → **System** → **Logs**.
 
 ### Common Issues
 
-| Issue | Solution |
-|-------|----------|
+| Issue                 | Solution                                                    |
+| --------------------- | ----------------------------------------------------------- |
 | Authentication failed | Verify credentials; delete and re-add integration if needed |
-| Invalid MFA code | Use the 4-digit code from email (not SMS) |
-| No devices found | Ensure device is paired and online in the Nanit app |
-| Connection timeout | Check network connectivity and device status |
+| Invalid MFA code      | Use the 4-digit code from email (not SMS)                   |
+| No devices found      | Ensure device is paired and online in the Nanit app         |
+| Connection timeout    | Check network connectivity and device status                |
 
 ### Getting Help
 
 When reporting issues, please include:
+
 - Debug logs showing the error
 - Home Assistant version
 - Steps to reproduce the issue

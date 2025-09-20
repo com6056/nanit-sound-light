@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import ssl
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 import websockets
@@ -40,21 +42,26 @@ class SoundLightAPI:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         """Initialize the API client."""
         self._session = session
-        self._access_token: Optional[str] = None
-        self._refresh_token: Optional[str] = None
-        self._password: Optional[str] = None
-        self._websockets: Dict[str, websockets.WebSocketServerProtocol] = {}
-        self._device_state: Dict[str, Dict[str, Any]] = {}
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._password: str | None = None
+        self._websockets: dict[str, websockets.WebSocketServerProtocol] = {}
+        self._device_state: dict[str, dict[str, Any]] = {}
         self._message_id = 1
         self._state_change_callback = None  # Callback for real-time updates
         self._last_auth_failure = None  # Track last auth failure time
         self._auth_retry_count = 0  # Track consecutive auth failures
         self._max_retry_count = 3  # Max retries before requiring manual intervention
         self._token_update_callback = None  # Callback for token updates
-        self._stored_email: Optional[str] = None
-        self._stored_password: Optional[str] = None
-        self._pending_mfa_token: Optional[str] = None  # Store MFA token when needed
+        self._stored_email: str | None = None
+        self._stored_password: str | None = None
+        self._pending_mfa_token: str | None = None  # Store MFA token when needed
         self._mfa_required_callback = None  # Callback when MFA is required
+        self._device_list: list[
+            dict[str, Any]
+        ] = []  # Store device info for reconnection
+        self._token_expires_at: float | None = None  # Token expiration timestamp
+        self._token_refresh_buffer = 300  # Refresh token 5 minutes before expiration
 
     def has_stored_credentials(self) -> bool:
         """Check if we have stored credentials for re-authentication."""
@@ -65,8 +72,79 @@ class SoundLightAPI:
             and len(self._stored_password.strip()) > 0
         )
 
+    def _extract_token_expiration(self, token: str) -> float | None:
+        """Extract expiration time from JWT token."""
+        if not token:
+            return None
+
+        try:
+            # JWT tokens have 3 parts separated by dots
+            parts = token.split(".")
+            if len(parts) != 3:
+                _LOGGER.debug(
+                    "Token is not a JWT (doesn't have 3 parts), assuming no expiration info available"
+                )
+                return None
+
+            # Decode the payload (second part)
+            payload = parts[1]
+            # Add padding if needed for base64 decoding
+            payload += "=" * (4 - len(payload) % 4)
+
+            try:
+                decoded = base64.urlsafe_b64decode(payload)
+                payload_data = json.loads(decoded.decode("utf-8"))
+
+                # JWT standard 'exp' field contains expiration timestamp
+                exp = payload_data.get("exp")
+                if exp:
+                    exp_time = float(exp)
+                    current_time = time.time()
+                    expires_in_minutes = (exp_time - current_time) / 60
+                    _LOGGER.debug(
+                        "JWT token expires in %.1f minutes (exp=%d)",
+                        expires_in_minutes,
+                        exp,
+                    )
+                    return exp_time
+                else:
+                    _LOGGER.debug("JWT token has no 'exp' field")
+                    return None
+
+            except (
+                base64.binascii.Error,
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+            ) as e:
+                _LOGGER.debug("Failed to decode JWT payload: %s", e)
+                return None
+
+        except Exception as e:
+            _LOGGER.debug("Failed to extract token expiration: %s", e)
+
+        return None
+
+    def _is_token_expired(self) -> bool:
+        """Check if access token is expired or needs refresh soon."""
+        if not self._access_token or not self._token_expires_at:
+            return True
+
+        # Check if token expires within the buffer time (5 minutes by default)
+        current_time = time.time()
+        expires_soon = current_time >= (
+            self._token_expires_at - self._token_refresh_buffer
+        )
+
+        if expires_soon:
+            _LOGGER.debug(
+                "Token expires in %.1f minutes, will refresh",
+                (self._token_expires_at - current_time) / 60,
+            )
+
+        return expires_soon
+
     async def authenticate(
-        self, email: str, password: str, refresh_token: Optional[str] = None
+        self, email: str, password: str, refresh_token: str | None = None
     ) -> None:
         """Authenticate with Nanit API (try refresh token first if available)."""
         # Store credentials for potential re-authentication
@@ -119,6 +197,20 @@ class SoundLightAPI:
                     # Successful login without MFA
                     response_data = await response.json()
                     self._access_token = response_data.get("access_token")
+
+                    # Extract token expiration
+                    if self._access_token:
+                        self._token_expires_at = self._extract_token_expiration(
+                            self._access_token
+                        )
+                        if self._token_expires_at:
+                            expires_in_minutes = (
+                                self._token_expires_at - time.time()
+                            ) / 60
+                            _LOGGER.debug(
+                                "Access token expires in %.1f minutes",
+                                expires_in_minutes,
+                            )
                     new_refresh_token = response_data.get("refresh_token")
                     if new_refresh_token:
                         self._refresh_token = new_refresh_token
@@ -203,7 +295,6 @@ class SoundLightAPI:
             async with self._session.post(
                 NANIT_AUTH_URL, json=mfa_data, headers=headers
             ) as response:
-                response_text = await response.text()
                 _LOGGER.debug(
                     "MFA response: status=%d, success=%s",
                     response.status,
@@ -213,6 +304,21 @@ class SoundLightAPI:
                 if response.status == 201:
                     response_data = await response.json()
                     self._access_token = response_data.get("access_token")
+
+                    # Extract token expiration
+                    if self._access_token:
+                        self._token_expires_at = self._extract_token_expiration(
+                            self._access_token
+                        )
+                        if self._token_expires_at:
+                            expires_in_minutes = (
+                                self._token_expires_at - time.time()
+                            ) / 60
+                            _LOGGER.debug(
+                                "Access token expires in %.1f minutes",
+                                expires_in_minutes,
+                            )
+
                     new_refresh_token = response_data.get("refresh_token")
                     if new_refresh_token:
                         self._refresh_token = new_refresh_token
@@ -273,6 +379,21 @@ class SoundLightAPI:
                 if response.status == 200:
                     data = await response.json()
                     self._access_token = data.get("access_token")
+
+                    # Extract token expiration
+                    if self._access_token:
+                        self._token_expires_at = self._extract_token_expiration(
+                            self._access_token
+                        )
+                        if self._token_expires_at:
+                            expires_in_minutes = (
+                                self._token_expires_at - time.time()
+                            ) / 60
+                            _LOGGER.debug(
+                                "Refreshed token expires in %.1f minutes",
+                                expires_in_minutes,
+                            )
+
                     new_refresh_token = data.get("refresh_token")
                     if new_refresh_token:
                         self._refresh_token = new_refresh_token
@@ -378,12 +499,18 @@ class SoundLightAPI:
 
     async def ensure_authenticated(self) -> bool:
         """Ensure we have a valid access token, refreshing if needed."""
-        # If we have a token, try to refresh it first
-        if self._access_token and self._refresh_token:
+        # If we have a valid token that doesn't need refresh, return immediately
+        if self._access_token and not self._is_token_expired():
+            return True
+
+        # Token is expired or expiring soon, try to refresh
+        if self._access_token and self._refresh_token and self._is_token_expired():
+            _LOGGER.debug("Token expires soon, attempting refresh...")
             if await self._refresh_auth():
                 return True
             # If refresh failed, clear the invalid token
             self._access_token = None
+            self._token_expires_at = None
 
         # If we don't have a valid token and should not attempt auth, return False
         if not self._access_token and not self._should_attempt_auth():
@@ -413,7 +540,7 @@ class SoundLightAPI:
 
         return self._access_token is not None
 
-    async def get_sound_light_devices(self) -> List[Dict[str, Any]]:
+    async def get_sound_light_devices(self) -> list[dict[str, Any]]:
         """Get list of Sound + Light devices."""
         if not await self.ensure_authenticated():
             raise AuthenticationError("Authentication failed or not authenticated")
@@ -455,11 +582,13 @@ class SoundLightAPI:
                             device_info["speaker_uid"],
                         )
 
+                # Store device list for potential reconnections
+                self._device_list = sound_light_devices
                 return sound_light_devices
             else:
                 raise Exception(f"Failed to get devices: {response.status}")
 
-    async def connect_device(self, device_info: Dict[str, Any]) -> None:
+    async def connect_device(self, device_info: dict[str, Any]) -> None:
         """Connect to a Sound + Light device WebSocket."""
         speaker_uid = device_info["speaker_uid"]
         baby_uid = device_info["baby_uid"]
@@ -494,18 +623,22 @@ class SoundLightAPI:
 
     async def send_control_command(self, baby_uid: str, **kwargs) -> None:
         """Send control command using pure protobuf."""
+        # Ensure we have a healthy WebSocket connection
+        if not await self.ensure_websocket_connection(baby_uid):
+            _LOGGER.error(
+                "Cannot send control command - no WebSocket connection for %s", baby_uid
+            )
+            return
+
         connection_key = f"{baby_uid}_speaker"
         websocket = self._websockets.get(connection_key)
-        if not websocket:
-            _LOGGER.error("No WebSocket connection for %s", baby_uid)
-            return
 
         try:
             from .sound_light_pb2 import (
+                Color,
                 Message,
                 Request,
                 Settings,
-                Color,
                 Sound,
             )
 
@@ -569,16 +702,21 @@ class SoundLightAPI:
 
     async def send_ping_for_state(self, baby_uid: str) -> None:
         """Send comprehensive status request to get device state and sensor data."""
+        # Ensure we have a healthy WebSocket connection
+        if not await self.ensure_websocket_connection(baby_uid):
+            _LOGGER.warning(
+                "Cannot send ping request - no WebSocket connection for %s", baby_uid
+            )
+            return
+
         connection_key = f"{baby_uid}_speaker"
         websocket = self._websockets.get(connection_key)
-        if not websocket:
-            return
 
         try:
             from .sound_light_pb2 import (
+                GetSettings,
                 Message,
                 Request,
-                GetSettings,
             )
 
             # Use proven working pattern: all=True + explicit sensor requests
@@ -613,6 +751,41 @@ class SoundLightAPI:
         except Exception as e:
             _LOGGER.error("Failed to send status request: %s", e)
 
+    def is_websocket_connected(self, baby_uid: str) -> bool:
+        """Check if WebSocket connection is healthy."""
+        connection_key = f"{baby_uid}_speaker"
+        websocket = self._websockets.get(connection_key)
+        return websocket is not None and not websocket.closed
+
+    async def ensure_websocket_connection(self, baby_uid: str) -> bool:
+        """Ensure WebSocket connection is available and healthy."""
+        if self.is_websocket_connected(baby_uid):
+            return True
+
+        _LOGGER.info(
+            "WebSocket connection needed for %s, attempting to connect...", baby_uid
+        )
+
+        # Find the device info for connection
+        device_info = None
+        for device in self._device_list:
+            if device.get("baby_uid") == baby_uid:
+                device_info = device
+                break
+
+        if not device_info:
+            _LOGGER.error("No device info found for WebSocket connection: %s", baby_uid)
+            return False
+
+        try:
+            await self.connect_device(device_info)
+            return self.is_websocket_connected(baby_uid)
+        except Exception as e:
+            _LOGGER.error(
+                "Failed to establish WebSocket connection for %s: %s", baby_uid, e
+            )
+            return False
+
     async def _handle_messages(
         self, connection_key: str, websocket: websockets.WebSocketServerProtocol
     ) -> None:
@@ -636,12 +809,17 @@ class SoundLightAPI:
                     )
 
         except ConnectionClosedError:
-            _LOGGER.debug("WebSocket connection closed for %s", connection_key)
+            _LOGGER.warning(
+                "WebSocket connection closed for %s, will reconnect on next use",
+                connection_key,
+            )
         except Exception as e:
             _LOGGER.error("Error in message handler for %s: %s", connection_key, e)
         finally:
+            # Clean up websocket reference but don't log as error - this is expected during reconnection
             if connection_key in self._websockets:
                 del self._websockets[connection_key]
+                _LOGGER.debug("Cleaned up WebSocket reference for %s", connection_key)
 
     async def _process_protobuf_message(
         self, connection_key: str, raw_message: bytes
@@ -877,7 +1055,7 @@ class SoundLightAPI:
             _LOGGER.warning("Protobuf parsing failed for %s: %s", baby_uid, e)
             _LOGGER.debug("Message hex: %s", raw_message.hex())
 
-    def get_device_state(self, baby_uid: str) -> Dict[str, Any]:
+    def get_device_state(self, baby_uid: str) -> dict[str, Any]:
         """Get current state for a device."""
         return self._device_state.get(baby_uid, {})
 
@@ -931,6 +1109,7 @@ class SoundLightAPI:
         self._refresh_token = None
         self._password = None
         self._pending_mfa_token = None
+        self._token_expires_at = None  # Clear token expiration tracking
         # Keep stored email/password for re-auth, but clear temp password and MFA state
         # Only clear if explicitly called (not during normal refresh)
 
@@ -943,9 +1122,9 @@ class SoundLightAPI:
 
         try:
             from .sound_light_pb2 import (
+                GetSettings,
                 Message,
                 Request,
-                GetSettings,
             )
 
             # Request saved sounds list (field 7 in GetSettings)

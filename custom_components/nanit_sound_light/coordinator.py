@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
-from typing import Any, Dict, List
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import SoundLightAPI, AuthenticationError
+from .api import AuthenticationError, SoundLightAPI
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,13 +59,13 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         # Set up MFA callback immediately - we need this for token refresh scenarios
         self.api.set_mfa_required_callback(self._trigger_mfa_reauth)
 
-        self._devices: List[Dict[str, Any]] = []
-        self._device_states: Dict[str, Dict[str, Any]] = {}
-        self._last_colors: Dict[str, Dict[str, Any]] = (
-            {}
-        )  # Remember last color for each device
+        self._devices: list[dict[str, Any]] = []
+        self._device_states: dict[str, dict[str, Any]] = {}
+        self._last_colors: dict[
+            str, dict[str, Any]
+        ] = {}  # Remember last color for each device
 
-    async def _async_update_data(self) -> Dict[str, Any]:
+    async def _async_update_data(self) -> dict[str, Any]:
         """Update data via library."""
         start_time = time.time()
         try:
@@ -362,11 +362,11 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             )
             raise
 
-    def get_last_color(self, baby_uid: str) -> Dict[str, Any] | None:
+    def get_last_color(self, baby_uid: str) -> dict[str, Any] | None:
         """Get the last known good color for a device."""
         return self._last_colors.get(baby_uid)
 
-    def save_last_color(self, baby_uid: str, color_dict: Dict[str, Any]) -> None:
+    def save_last_color(self, baby_uid: str, color_dict: dict[str, Any]) -> None:
         """Save a user-chosen color as the last color to restore later."""
         if not color_dict.get("noColor", True):  # Only save when color is enabled
             last_color = {

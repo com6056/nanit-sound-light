@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -11,7 +13,6 @@ from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
 from .coordinator import NanitSoundLightCoordinator
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,7 +27,16 @@ PLATFORMS: list[Platform] = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Nanit Sound + Light from a config entry."""
-    _LOGGER.info("🚀 Setting up Nanit Sound + Light integration v%s", "1.0.0")
+    # Get version from manifest to avoid hardcoding
+    manifest_path = Path(__file__).parent / "manifest.json"
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+            version = manifest.get("version", "unknown")
+    except Exception:
+        version = "unknown"
+
+    _LOGGER.info("🚀 Setting up Nanit Sound + Light integration v%s", version)
 
     # Initialize coordinator
     coordinator = NanitSoundLightCoordinator(hass, entry)

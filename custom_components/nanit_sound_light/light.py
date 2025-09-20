@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.light import LightEntity, ColorMode
+from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
 from .const import DOMAIN
 from .coordinator import NanitSoundLightCoordinator
 from .entity import NanitSoundLightEntity
