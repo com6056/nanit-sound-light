@@ -23,6 +23,42 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Import protobuf classes at module level to avoid blocking async operations
+try:
+    from .sound_light_pb2 import (
+        Color,
+        GetSettings,
+        Message,
+        Request,
+        Settings,
+        Sound,
+    )
+
+    PROTOBUF_AVAILABLE = True
+except ImportError as e:
+    _LOGGER.error("Failed to import protobuf classes: %s", e)
+
+    # Create dummy classes to prevent import errors
+    class Color:
+        pass
+
+    class GetSettings:
+        pass
+
+    class Message:
+        pass
+
+    class Request:
+        pass
+
+    class Settings:
+        pass
+
+    class Sound:
+        pass
+
+    PROTOBUF_AVAILABLE = False
+
 
 class AuthenticationError(Exception):
     """Authentication failed."""
@@ -634,13 +670,12 @@ class SoundLightAPI:
         websocket = self._websockets.get(connection_key)
 
         try:
-            from .sound_light_pb2 import (
-                Color,
-                Message,
-                Request,
-                Settings,
-                Sound,
-            )
+            # Check if protobuf classes are available
+            if not PROTOBUF_AVAILABLE:
+                _LOGGER.error(
+                    "Protobuf classes not available - cannot send control command"
+                )
+                return
 
             # Create protobuf control request using official APK pattern
             message = Message()
@@ -713,11 +748,9 @@ class SoundLightAPI:
         websocket = self._websockets.get(connection_key)
 
         try:
-            from .sound_light_pb2 import (
-                GetSettings,
-                Message,
-                Request,
-            )
+            if not PROTOBUF_AVAILABLE:
+                _LOGGER.error("Protobuf not available for sending ping state request")
+                return
 
             # Use proven working pattern: all=True + explicit sensor requests
             # This is the only pattern that successfully returns sensor data
@@ -853,7 +886,9 @@ class SoundLightAPI:
         try:
             # Try parsing as new Message structure first (only for response messages, not deviceData)
             try:
-                from .sound_light_pb2 import Message
+                if not PROTOBUF_AVAILABLE:
+                    _LOGGER.error("Protobuf not available for processing message")
+                    return
 
                 message_response = Message()
                 message_response.ParseFromString(raw_message)
@@ -1143,19 +1178,9 @@ class SoundLightAPI:
             return
 
         try:
-            from .sound_light_pb2 import (
-                GetSettings,
-                Message,
-                Request,
-            )
-        except ImportError as e:
-            if "incompatible Protobuf" in str(e):
-                _LOGGER.error(
-                    "Protobuf version mismatch detected. This integration was compiled with "
-                    "a newer protobuf version than your Home Assistant runtime. "
-                    "Please report this issue at: https://github.com/com6056/nanit-sound-light/issues"
-                )
-            raise e
+            if not PROTOBUF_AVAILABLE:
+                _LOGGER.error("Protobuf not available for sending saved sounds request")
+                return
 
             # Request saved sounds list (field 7 in GetSettings)
             get_settings = GetSettings()
