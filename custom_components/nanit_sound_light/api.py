@@ -23,6 +23,36 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_REDACTED_RESPONSE_KEYS = frozenset(
+    {"access_token", "refresh_token", "mfa_token", "password"}
+)
+
+
+def _redact_response_for_log(body: str | dict) -> str:
+    """Return a debug-safe representation of an auth response.
+
+    The Nanit /login endpoint returns access_token / refresh_token /
+    mfa_token in the response body — logging the raw body or even a
+    truncated preview leaks bearer tokens to anyone who pastes their HA
+    debug log into a GitHub issue. This decodes the body as JSON,
+    replaces sensitive values with "***", and returns the redacted form
+    for logging. Falls back to a length-only description for non-JSON
+    bodies.
+    """
+    try:
+        data = body if isinstance(body, dict) else json.loads(body)
+    except (ValueError, TypeError):
+        length = len(body) if isinstance(body, (str, bytes)) else len(str(body))
+        return f"<{length} bytes, not JSON>"
+    if not isinstance(data, dict):
+        return f"<{type(data).__name__}, not a JSON object>"
+    redacted = {k: ("***" if k in _REDACTED_RESPONSE_KEYS and v else v) for k, v in data.items()}
+    try:
+        return json.dumps(redacted)
+    except (TypeError, ValueError):
+        return f"<dict with {len(redacted)} keys, not serializable>"
+
+
 # Import protobuf classes at module level to avoid blocking async operations
 try:
     from .sound_light_pb2 import (
@@ -220,14 +250,10 @@ class SoundLightAPI:
                     response.status,
                     len(response_text),
                 )
-
-                # Only log response details at debug level to avoid exposing tokens
-                sanitized_response = (
-                    response_text[:200] + "..."
-                    if len(response_text) > 200
-                    else response_text
+                _LOGGER.debug(
+                    "Login response (redacted): %s",
+                    _redact_response_for_log(response_text),
                 )
-                _LOGGER.debug("Login response preview: %s", sanitized_response)
 
                 if response.status == 201:
                     # Successful login without MFA
@@ -270,7 +296,10 @@ class SoundLightAPI:
                 elif response.status in [200, 482]:
                     # MFA required - 482 is the actual MFA status code
                     response_data = await response.json()
-                    _LOGGER.debug("MFA required response data: %s", response_data)
+                    _LOGGER.debug(
+                        "MFA required response (redacted): %s",
+                        _redact_response_for_log(response_data),
+                    )
 
                     mfa_token = response_data.get("mfa_token")
                     if mfa_token:
@@ -281,7 +310,8 @@ class SoundLightAPI:
                         raise MfaRequiredError("MFA code required", mfa_token)
 
                 raise AuthenticationError(
-                    f"Login failed: {response.status} - {response_text[:100] + ('...' if len(response_text) > 100 else '')}"
+                    f"Login failed: status={response.status}, "
+                    f"body={_redact_response_for_log(response_text)}"
                 )
 
         except MfaRequiredError:
@@ -576,53 +606,61 @@ class SoundLightAPI:
 
         return self._access_token is not None
 
+    async def _fetch_babies_with_retry(self) -> dict[str, Any]:
+        """Fetch the babies endpoint, refreshing the access token once on 401.
+
+        Returns the parsed JSON body. Each `response.json()` call lives
+        inside its own `async with` so we never await a buffered body
+        after the context manager has released the underlying connection.
+        """
+        headers = {"Authorization": f"Bearer {self._access_token}"}
+        async with self._session.get(NANIT_BABIES_URL, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            if response.status == 401:
+                # Try to refresh and retry once.
+                if not await self._refresh_auth():
+                    raise AuthenticationError("Token expired and refresh failed")
+            else:
+                raise Exception(f"Failed to get devices: {response.status}")
+
+        # Refresh succeeded; retry with the new access token.
+        headers = {"Authorization": f"Bearer {self._access_token}"}
+        async with self._session.get(NANIT_BABIES_URL, headers=headers) as retry_response:
+            if retry_response.status == 200:
+                return await retry_response.json()
+            raise Exception(
+                f"Failed to get devices after refresh: {retry_response.status}"
+            )
+
     async def get_sound_light_devices(self) -> list[dict[str, Any]]:
         """Get list of Sound + Light devices."""
         if not await self.ensure_authenticated():
             raise AuthenticationError("Authentication failed or not authenticated")
 
-        headers = {"Authorization": f"Bearer {self._access_token}"}
+        babies_data = await self._fetch_babies_with_retry()
+        sound_light_devices = []
 
-        async with self._session.get(NANIT_BABIES_URL, headers=headers) as response:
-            if response.status == 401:
-                # Token expired, try to refresh and retry once
-                if await self._refresh_auth():
-                    headers = {"Authorization": f"Bearer {self._access_token}"}
-                    async with self._session.get(
-                        NANIT_BABIES_URL, headers=headers
-                    ) as retry_response:
-                        response = retry_response
-                else:
-                    raise AuthenticationError("Token expired and refresh failed")
+        for baby in babies_data.get("babies", []):
+            # Check if baby has Sound + Light device
+            speaker_data = baby.get("speaker", {})
+            if speaker_data.get("attached_to_speaker") and speaker_data.get("speaker"):
+                device_info = {
+                    "baby_uid": baby.get("uid"),
+                    "baby_name": baby.get("name", "Nanit"),
+                    "speaker_uid": speaker_data["speaker"]["uid"],
+                    "speaker_name": speaker_data["speaker"]["name"],
+                }
+                sound_light_devices.append(device_info)
+                _LOGGER.info(
+                    "Found Sound + Light device: %s (%s)",
+                    device_info["speaker_name"],
+                    device_info["speaker_uid"],
+                )
 
-            if response.status == 200:
-                babies_data = await response.json()
-                sound_light_devices = []
-
-                for baby in babies_data.get("babies", []):
-                    # Check if baby has Sound + Light device
-                    speaker_data = baby.get("speaker", {})
-                    if speaker_data.get("attached_to_speaker") and speaker_data.get(
-                        "speaker"
-                    ):
-                        device_info = {
-                            "baby_uid": baby.get("uid"),
-                            "baby_name": baby.get("name", "Nanit"),
-                            "speaker_uid": speaker_data["speaker"]["uid"],
-                            "speaker_name": speaker_data["speaker"]["name"],
-                        }
-                        sound_light_devices.append(device_info)
-                        _LOGGER.info(
-                            "Found Sound + Light device: %s (%s)",
-                            device_info["speaker_name"],
-                            device_info["speaker_uid"],
-                        )
-
-                # Store device list for potential reconnections
-                self._device_list = sound_light_devices
-                return sound_light_devices
-            else:
-                raise Exception(f"Failed to get devices: {response.status}")
+        # Store device list for potential reconnections
+        self._device_list = sound_light_devices
+        return sound_light_devices
 
     async def connect_device(self, device_info: dict[str, Any]) -> None:
         """Connect to a Sound + Light device WebSocket."""
@@ -968,13 +1006,19 @@ class SoundLightAPI:
                             # Don't override existing color state - device doesn't return color info
                             pass
 
-                        # Parse available sounds list from device
+                        # Parse available sounds list from device. Track
+                        # names come from the cloud/device as untrusted
+                        # strings — clamp length and require printable chars
+                        # before exposing as HA select-entity options.
                         if settings.HasField("soundList"):
                             sound_list = settings.soundList
                             if sound_list.tracks:
-                                available_sounds = ["No sound"] + list(
-                                    sound_list.tracks
-                                )
+                                clean_tracks = [
+                                    t[:64]
+                                    for t in sound_list.tracks
+                                    if t and t.isprintable() and t.strip()
+                                ]
+                                available_sounds = ["No sound"] + clean_tracks
                                 device_state["available_sounds"] = available_sounds
                                 _LOGGER.info(
                                     "Received dynamic sound list for %s: %s",

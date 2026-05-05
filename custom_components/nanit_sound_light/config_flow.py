@@ -73,10 +73,11 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     _LOGGER.info(
                         "🎉 Successfully found %d Sound + Light device(s)", len(devices)
                     )
-                    # Store refresh token if we got one
+                    # Persist email + refresh_token only — the password is
+                    # held only in api._stored_password for the duration of
+                    # this session, never written to .storage/core.config_entries.
                     data = {
                         CONF_EMAIL: self._email,
-                        CONF_PASSWORD: self._password,
                     }
                     if api._refresh_token:
                         data["refresh_token"] = api._refresh_token
@@ -136,10 +137,11 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "🎉 MFA verification successful - found %d device(s)",
                         len(devices),
                     )
-                    # Store refresh token for future authentication
+                    # Persist email + refresh_token only — the password is
+                    # held only in api._stored_password for the duration of
+                    # this session, never written to .storage/core.config_entries.
                     data = {
                         CONF_EMAIL: self._email,
-                        CONF_PASSWORD: self._password,
                     }
                     if api._refresh_token:
                         data["refresh_token"] = api._refresh_token

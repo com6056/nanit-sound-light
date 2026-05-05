@@ -9,7 +9,7 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD  # noqa: F401  # CONF_PASSWORD kept for legacy-entry migration
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -42,14 +42,28 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         if not self.validate_config():
             raise ValueError("Invalid configuration data")
 
-        # Initialize API with stored credentials for automatic re-authentication
+        # Migrate legacy entries that have CONF_PASSWORD persisted on disk
+        # (pre-2026-05 versions stored it for silent re-auth). Strip it so
+        # the on-disk .storage/core.config_entries no longer holds the
+        # plaintext password.
+        if CONF_PASSWORD in self.config_entry.data:
+            new_data = {k: v for k, v in self.config_entry.data.items() if k != CONF_PASSWORD}
+            hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            _LOGGER.info(
+                "Removed legacy plaintext password from config entry data "
+                "(refresh_token is sufficient for re-authentication)"
+            )
+
+        # Initialize API with the email + refresh_token only. Password lives
+        # in memory only after a successful authenticate() call within this
+        # session — it is never loaded from disk. If HA restarts and the
+        # refresh token has been rejected, the integration will require the
+        # user to remove + re-add it (rare; refresh tokens are long-lived
+        # and rotated on every successful login).
         email = self.config_entry.data[CONF_EMAIL]
-        password = self.config_entry.data[CONF_PASSWORD]
         refresh_token = self.config_entry.data.get("refresh_token")
 
-        # Store credentials in API for potential re-authentication
         self.api._stored_email = email
-        self.api._stored_password = password
         if refresh_token:
             self.api._refresh_token = refresh_token
 
@@ -259,11 +273,13 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
     def validate_config(self) -> bool:
         """Validate that we have required configuration data."""
-        required_fields = [CONF_EMAIL, CONF_PASSWORD]
-        for field in required_fields:
-            if field not in self.config_entry.data or not self.config_entry.data[field]:
-                _LOGGER.error("Missing required configuration field: %s", field)
-                return False
+        # Only email is required on disk. The password is no longer
+        # persisted — it lives in memory after authenticate() during the
+        # session. The refresh_token is optional at validate time because
+        # it might not have been issued yet on a fresh entry.
+        if CONF_EMAIL not in self.config_entry.data or not self.config_entry.data[CONF_EMAIL]:
+            _LOGGER.error("Missing required configuration field: %s", CONF_EMAIL)
+            return False
         return True
 
     async def _trigger_mfa_reauth(self) -> None:
