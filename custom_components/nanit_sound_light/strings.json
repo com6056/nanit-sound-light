@@ -29,10 +29,14 @@
       "invalid_auth": "Invalid email or password. Please check your credentials.",
       "invalid_mfa": "Invalid verification code. Please try again.",
       "no_devices": "No Sound + Light devices found on your account.",
-      "reauth_failed": "Re-authentication failed. Please try deleting and re-adding the integration.",
-      "no_mfa_pending": "No MFA authentication pending.",
       "integration_not_ready": "Integration is still setting up. Please wait a moment and try again.",
       "unknown": "An unexpected error occurred. Please try again."
+    },
+    "abort": {
+      "already_configured": "This Nanit account is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "no_mfa_pending": "No MFA verification is pending.",
+      "reauth_failed": "Re-authentication failed. Please try deleting and re-adding the integration."
     }
   }
 }

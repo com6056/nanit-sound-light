@@ -11,6 +11,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
+from .api import PROTOBUF_AVAILABLE
 from .const import DOMAIN
 from .coordinator import NanitSoundLightCoordinator
 
@@ -27,6 +28,16 @@ PLATFORMS: list[Platform] = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Nanit Sound + Light from a config entry."""
+    if not PROTOBUF_AVAILABLE:
+        # The generated protobuf module failed to import (e.g. a protobuf
+        # runtime version mismatch). Fail clearly rather than running degraded,
+        # where every control/parse path silently no-ops.
+        _LOGGER.error(
+            "protobuf is unavailable - the Nanit Sound + Light integration "
+            "cannot function. Check the 'protobuf' Python package version."
+        )
+        return False
+
     # Get version from manifest to avoid hardcoding
     manifest_path = Path(__file__).parent / "manifest.json"
     try:
@@ -84,27 +95,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _LOGGER.info("🔄 Unloading Nanit Sound + Light integration")
+    _LOGGER.debug("Unloading Nanit Sound + Light integration")
 
-    # Close coordinator and API connections
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    _LOGGER.debug("🔌 Closing API connections...")
-    await coordinator.async_close()
-
-    # Clear any pending MFA notifications
-    await hass.services.async_call(
-        "persistent_notification",
-        "dismiss",
-        {"notification_id": f"nanit_mfa_{entry.entry_id}"},
-    )
-
-    # Unload platforms
-    _LOGGER.debug("📱 Unloading platforms...")
+    # Unload platforms first (so entities are gone), then tear down the socket.
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Remove stored data
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-        _LOGGER.info("✅ Nanit Sound + Light integration unloaded successfully")
+        coordinator = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        if coordinator is not None:
+            await coordinator.async_close()
+        # Clear any pending MFA notification for this entry.
+        await hass.services.async_call(
+            "persistent_notification",
+            "dismiss",
+            {"notification_id": f"nanit_mfa_{entry.entry_id}"},
+        )
 
     return unload_ok

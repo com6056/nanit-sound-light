@@ -62,11 +62,6 @@ class NanitSoundLightVolume(NanitSoundLightEntity, NumberEntity):
         # Round to 1 decimal place to avoid long float precision issues
         return round(volume_float * 100, 1)  # Convert 0.0-1.0 to 0-100
 
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return self.coordinator.data is not None
-
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume percentage."""
         try:

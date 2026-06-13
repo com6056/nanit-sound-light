@@ -79,11 +79,6 @@ class NanitSoundLightSoundSelect(NanitSoundLightEntity, SelectEntity):
 
         return None
 
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return self.coordinator.data is not None
-
     async def async_select_option(self, option: str) -> None:
         """Select a sound option."""
         if option in self.options:
