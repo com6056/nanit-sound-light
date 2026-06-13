@@ -1,0 +1,11 @@
+# Test deps for the lean (Home-Assistant-free) test layers: protobuf contract
+# tests and api.py unit tests. Run these in a throwaway container, never on the
+# host (keeps with a minimal-dep convention).
+#
+# Coordinator/entity tests that need a real `hass` should additionally install
+# pytest-homeassistant-custom-component (heavier; added when those tests land).
+pytest
+pytest-asyncio
+protobuf>=3.19.0
+aiohttp
+websockets>=10.0
