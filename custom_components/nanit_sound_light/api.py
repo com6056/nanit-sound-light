@@ -46,11 +46,36 @@ def _redact_response_for_log(body: str | dict) -> str:
         return f"<{length} bytes, not JSON>"
     if not isinstance(data, dict):
         return f"<{type(data).__name__}, not a JSON object>"
-    redacted = {k: ("***" if k in _REDACTED_RESPONSE_KEYS and v else v) for k, v in data.items()}
+    redacted = {
+        k: ("***" if k in _REDACTED_RESPONSE_KEYS and v else v) for k, v in data.items()
+    }
     try:
         return json.dumps(redacted)
     except (TypeError, ValueError):
         return f"<dict with {len(redacted)} keys, not serializable>"
+
+
+# WebSocket liveness. The device relies on WebSocket protocol-level ping/pong
+# for keepalive; it sends no app-level keepalive frame (see CLAUDE.md). We set
+# the ping interval explicitly rather than leaning on library defaults.
+WS_PING_INTERVAL = 20  # seconds
+WS_PING_TIMEOUT = 20  # seconds — drop a half-open socket instead of wedging
+WS_CLOSE_TIMEOUT = 5  # seconds
+
+# Reconnect backoff, mirroring the official app's
+# RemoteControlSocketCandidate.getNextRetryTime: 0s, then 2s, 5s, capped at 7s.
+# Replaces the old "reconnect lazily on the next 30s poll" behaviour.
+
+
+def _reconnect_backoff(retries: int) -> int:
+    """Seconds to wait before reconnect attempt number ``retries`` (0-indexed)."""
+    if retries < 1:
+        return 0
+    if retries < 4:
+        return 2
+    if retries < 11:
+        return 5
+    return 7
 
 
 # Import protobuf classes at module level to avoid blocking async operations
@@ -128,6 +153,20 @@ class SoundLightAPI:
         ] = []  # Store device info for reconnection
         self._token_expires_at: float | None = None  # Token expiration timestamp
         self._token_refresh_buffer = 300  # Refresh token 5 minutes before expiration
+
+        # Connection lifecycle. `_closing` stops the reconnect loop on shutdown;
+        # `_connect_locks` serialises connects per device so a proactive
+        # reconnect, a lazy `ensure_websocket_connection`, and the 30s poll can't
+        # open duplicate sockets; `_reconnect_tasks` tracks the running backoff
+        # loop per device.
+        self._closing = False
+        self._connect_locks: dict[str, asyncio.Lock] = {}
+        self._reconnect_tasks: dict[str, asyncio.Task] = {}
+        # Strong refs to the per-connection message-handler tasks. asyncio only
+        # holds a weak reference to a bare create_task() result, so without this
+        # the handler could be garbage-collected mid-run and silently stop
+        # delivering device pushes.
+        self._handler_tasks: dict[str, asyncio.Task] = {}
 
     def has_stored_credentials(self) -> bool:
         """Check if we have stored credentials for re-authentication."""
@@ -626,7 +665,9 @@ class SoundLightAPI:
 
         # Refresh succeeded; retry with the new access token.
         headers = {"Authorization": f"Bearer {self._access_token}"}
-        async with self._session.get(NANIT_BABIES_URL, headers=headers) as retry_response:
+        async with self._session.get(
+            NANIT_BABIES_URL, headers=headers
+        ) as retry_response:
             if retry_response.status == 200:
                 return await retry_response.json()
             raise Exception(
@@ -667,40 +708,179 @@ class SoundLightAPI:
         speaker_uid = device_info["speaker_uid"]
         baby_uid = device_info["baby_uid"]
 
-        ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
-        headers = {"Authorization": f"Bearer {self._access_token}"}
+        # Serialise connects per device so concurrent callers (proactive
+        # reconnect, lazy ensure_websocket_connection, the 30s poll) don't open
+        # duplicate sockets and orphan one of them.
+        lock = self._connect_locks.setdefault(baby_uid, asyncio.Lock())
+        async with lock:
+            if self.is_websocket_connected(baby_uid):
+                return  # someone connected while we waited for the lock
 
-        try:
-            # Create SSL context in executor to avoid blocking the event loop
-            loop = asyncio.get_event_loop()
-            ssl_context = await loop.run_in_executor(None, ssl.create_default_context)
+            ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
+            headers = {"Authorization": f"Bearer {self._access_token}"}
 
-            websocket = await websockets.connect(
-                ws_url, additional_headers=headers, ssl=ssl_context
-            )
+            try:
+                # TLS context only for wss:// (plaintext ws:// is used by tests
+                # against an in-process fake). Build it off the event loop.
+                ssl_context = None
+                if ws_url.startswith("wss://"):
+                    loop = asyncio.get_event_loop()
+                    ssl_context = await loop.run_in_executor(
+                        None, ssl.create_default_context
+                    )
 
-            connection_key = f"{baby_uid}_speaker"
-            self._websockets[connection_key] = websocket
+                websocket = await websockets.connect(
+                    ws_url,
+                    additional_headers=headers,
+                    ssl=ssl_context,
+                    ping_interval=WS_PING_INTERVAL,
+                    ping_timeout=WS_PING_TIMEOUT,
+                    close_timeout=WS_CLOSE_TIMEOUT,
+                )
 
-            # Start message handler
-            asyncio.create_task(self._handle_messages(connection_key, websocket))
+                connection_key = f"{baby_uid}_speaker"
+                self._websockets[connection_key] = websocket
 
-            # Send immediate ping to get current device state
-            await self.send_ping_for_state(baby_uid)
+                # Start message handler, keeping a strong reference so it can't
+                # be garbage-collected mid-run; drop the ref when it finishes.
+                task = asyncio.create_task(
+                    self._handle_messages(connection_key, websocket)
+                )
+                self._handler_tasks[connection_key] = task
+                task.add_done_callback(
+                    lambda _t, key=connection_key: self._handler_tasks.pop(key, None)
+                )
 
-            _LOGGER.info("Connected to Sound + Light device: %s", speaker_uid)
+                # Send immediate ping to get current device state
+                await self.send_ping_for_state(baby_uid)
 
-        except Exception as e:
-            _LOGGER.error(
-                "Failed to connect to Sound + Light device %s: %s", speaker_uid, e
-            )
+                _LOGGER.info("Connected to Sound + Light device: %s", speaker_uid)
+
+            except Exception as e:
+                _LOGGER.error(
+                    "Failed to connect to Sound + Light device %s: %s", speaker_uid, e
+                )
+
+    def _schedule_reconnect(self, baby_uid: str) -> None:
+        """Start a backoff reconnect loop for a device if one isn't running."""
+        if self._closing:
+            return
+        task = self._reconnect_tasks.get(baby_uid)
+        if task is not None and not task.done():
+            return
+        self._reconnect_tasks[baby_uid] = asyncio.create_task(
+            self._reconnect_with_backoff(baby_uid)
+        )
+
+    async def _reconnect_with_backoff(self, baby_uid: str) -> None:
+        """Reconnect a dropped device socket, backing off like the official app.
+
+        Replaces the previous "reconnect only on the next 30s poll" behaviour,
+        which left the socket dead for up to 30s and, against the gateway's
+        post-drop 502 window, often stayed down for minutes.
+        """
+        device_info = next(
+            (d for d in self._device_list if d.get("baby_uid") == baby_uid), None
+        )
+        if device_info is None:
+            return
+
+        retries = 0
+        while not self._closing and not self.is_websocket_connected(baby_uid):
+            delay = _reconnect_backoff(retries)
+            if delay:
+                await asyncio.sleep(delay)
+            if self._closing:
+                return
+            _LOGGER.debug("Reconnecting to %s (attempt %d)", baby_uid, retries + 1)
+            await self.connect_device(device_info)
+            retries += 1
+
+        if self.is_websocket_connected(baby_uid):
+            _LOGGER.info("Reconnected to %s after %d attempt(s)", baby_uid, retries)
+
+    def _next_message_id(self) -> int:
+        """Return a unique, monotonically increasing control-message id.
+
+        The official app stamps every control request with an incrementing id
+        (an AtomicInteger) and correlates responses by it. We previously sent
+        ``id=1`` on every command, so concurrent commands — e.g. a Home
+        Assistant scene touching power + sound + volume + light at once — were
+        indistinguishable and their out-of-order responses could clobber each
+        other's state. asyncio is single-threaded, so a plain increment is
+        race-free here.
+        """
+        self._message_id += 1
+        return self._message_id
+
+    def build_control_message(self, **kwargs) -> tuple[bytes, int]:
+        """Build a serialized control Message from the given fields.
+
+        Returns ``(message_bytes, message_id)``. Every provided field is packed
+        into a SINGLE ``Settings`` message, so a coalesced multi-field command
+        (the app's "apply a preset" pattern) is one atomic write rather than
+        several racing writes. Pure and synchronous with no websocket, so it is
+        unit-testable offline.
+        """
+        message = Message()
+        request = Request()
+        settings = Settings()
+
+        message_id = self._next_message_id()
+        request.id = message_id
+
+        # Set control parameters
+        if "is_on" in kwargs:
+            settings.isOn = kwargs["is_on"]
+        if "brightness" in kwargs:
+            settings.brightness = float(kwargs["brightness"])
+        if "volume" in kwargs:
+            settings.volume = float(kwargs["volume"])
+        if "color" in kwargs:
+            color_info = kwargs["color"]
+            color_data = Color()
+            color_data.noColor = color_info.get("noColor", False)
+            color_data.hue = float(color_info.get("hue", 0.0))
+            color_data.saturation = float(color_info.get("saturation", 0.0))
+            # Note: brightness is sent separately in Settings.brightness, not in Color
+            settings.color.CopyFrom(color_data)
+
+            # Set brightness separately in Settings (matches official APK pattern)
+            if "brightness" in color_info:
+                settings.brightness = float(color_info["brightness"])
+        if "sound" in kwargs:
+            sound_option = kwargs["sound"]
+            sound_data = Sound()
+            if sound_option == "No sound":
+                sound_data.noSound = True
+                sound_data.track = ""  # Empty track when no sound
+            else:
+                sound_data.noSound = False
+                sound_data.track = str(sound_option)
+            settings.sound.CopyFrom(sound_data)
+
+        # Set the settings in the request, and the request in the message
+        request.settings.CopyFrom(settings)
+        message.request.CopyFrom(request)
+
+        return message.SerializeToString(), message_id
 
     async def send_control_command(self, baby_uid: str, **kwargs) -> None:
         """Send control command using pure protobuf."""
-        # Ensure we have a healthy WebSocket connection
+        # Ensure we have a healthy WebSocket connection. Raise (rather than
+        # silently return) so the caller's failure surfaces instead of the
+        # command appearing to succeed while nothing reached the device, and
+        # kick a reconnect.
         if not await self.ensure_websocket_connection(baby_uid):
+            self._schedule_reconnect(baby_uid)
+            raise ConnectionError(
+                f"No WebSocket connection to send control command for {baby_uid}"
+            )
+
+        # Check if protobuf classes are available
+        if not PROTOBUF_AVAILABLE:
             _LOGGER.error(
-                "Cannot send control command - no WebSocket connection for %s", baby_uid
+                "Protobuf classes not available - cannot send control command"
             )
             return
 
@@ -708,64 +888,13 @@ class SoundLightAPI:
         websocket = self._websockets.get(connection_key)
 
         try:
-            # Check if protobuf classes are available
-            if not PROTOBUF_AVAILABLE:
-                _LOGGER.error(
-                    "Protobuf classes not available - cannot send control command"
-                )
-                return
-
-            # Create protobuf control request using official APK pattern
-            message = Message()
-            request = Request()
-            settings = Settings()
-
-            # Set request ID
-            request.id = 1
-
-            # Set control parameters
-            if "is_on" in kwargs:
-                settings.isOn = kwargs["is_on"]
-            if "brightness" in kwargs:
-                settings.brightness = float(kwargs["brightness"])
-            if "volume" in kwargs:
-                settings.volume = float(kwargs["volume"])
-            if "color" in kwargs:
-                color_info = kwargs["color"]
-                color_data = Color()
-                color_data.noColor = color_info.get("noColor", False)
-                color_data.hue = float(color_info.get("hue", 0.0))
-                color_data.saturation = float(color_info.get("saturation", 0.0))
-                # Note: brightness is sent separately in Settings.brightness, not in Color
-                settings.color.CopyFrom(color_data)
-
-                # Set brightness separately in Settings (matches official APK pattern)
-                if "brightness" in color_info:
-                    settings.brightness = float(color_info["brightness"])
-            if "sound" in kwargs:
-                sound_option = kwargs["sound"]
-                sound_data = Sound()
-                if sound_option == "No sound":
-                    sound_data.noSound = True
-                    sound_data.track = ""  # Empty track when no sound
-                else:
-                    sound_data.noSound = False
-                    sound_data.track = str(sound_option)
-                settings.sound.CopyFrom(sound_data)
-
-            # Set the settings in the request
-            request.settings.CopyFrom(settings)
-
-            # Set the request in the message
-            message.request.CopyFrom(request)
-
-            # Serialize and send
-            message_bytes = message.SerializeToString()
+            message_bytes, message_id = self.build_control_message(**kwargs)
             await websocket.send(message_bytes)
 
             _LOGGER.debug(
-                "Sent protobuf control for %s: %s (hex: %s)",
+                "Sent protobuf control for %s (id=%s): %s (hex: %s)",
                 baby_uid,
+                message_id,
                 kwargs,
                 message_bytes.hex(),
             )
@@ -775,11 +904,14 @@ class SoundLightAPI:
 
     async def send_ping_for_state(self, baby_uid: str) -> None:
         """Send comprehensive status request to get device state and sensor data."""
-        # Ensure we have a healthy WebSocket connection
+        # Ensure we have a healthy WebSocket connection. Unlike a control
+        # command this is a best-effort poll, so don't raise — just warn and let
+        # the reconnect loop bring the socket back.
         if not await self.ensure_websocket_connection(baby_uid):
             _LOGGER.warning(
                 "Cannot send ping request - no WebSocket connection for %s", baby_uid
             )
+            self._schedule_reconnect(baby_uid)
             return
 
         connection_key = f"{baby_uid}_speaker"
@@ -903,22 +1035,25 @@ class SoundLightAPI:
 
         except ConnectionClosedError:
             _LOGGER.warning(
-                "WebSocket connection closed for %s, will reconnect on next use",
-                connection_key,
+                "WebSocket connection closed for %s, reconnecting", connection_key
             )
         except Exception as e:
             _LOGGER.error("Error in message handler for %s: %s", connection_key, e)
         finally:
-            # Clean up websocket reference but don't log as error - this is expected during reconnection
-            if connection_key in self._websockets:
+            # Only clean up if the stored socket is still *this* one — a proactive
+            # reconnect may have already replaced it under the same key.
+            if self._websockets.get(connection_key) is websocket:
                 del self._websockets[connection_key]
                 _LOGGER.debug("Cleaned up WebSocket reference for %s", connection_key)
+                # Proactively reconnect instead of waiting for the next lazy use.
+                if not self._closing:
+                    self._schedule_reconnect(connection_key.rsplit("_speaker", 1)[0])
 
     async def _process_protobuf_message(
         self, connection_key: str, raw_message: bytes
     ) -> None:
         """Process incoming message using pure protobuf parsing."""
-        baby_uid = connection_key.split("_")[0]
+        baby_uid = connection_key.rsplit("_speaker", 1)[0]
         device_state = self._device_state.setdefault(baby_uid, {})
 
         try:
@@ -1253,6 +1388,16 @@ class SoundLightAPI:
 
     async def close(self) -> None:
         """Close all connections and clean up resources."""
+        # Stop reconnecting before tearing sockets down, else the handler's
+        # teardown would immediately schedule a fresh reconnect loop.
+        self._closing = True
+        for task in self._reconnect_tasks.values():
+            task.cancel()
+        self._reconnect_tasks.clear()
+        for task in self._handler_tasks.values():
+            task.cancel()
+        self._handler_tasks.clear()
+
         # Close all websockets
         websocket_close_tasks = []
         for connection_key, websocket in list(self._websockets.items()):

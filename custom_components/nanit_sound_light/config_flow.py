@@ -73,6 +73,10 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     _LOGGER.info(
                         "🎉 Successfully found %d Sound + Light device(s)", len(devices)
                     )
+                    # Stable per-account unique id so the same Nanit account can't
+                    # be added twice and so reauth can find this entry.
+                    await self.async_set_unique_id(self._email.lower())
+                    self._abort_if_unique_id_configured()
                     # Persist email + refresh_token only — the password is
                     # held only in api._stored_password for the duration of
                     # this session, never written to .storage/core.config_entries.
@@ -137,6 +141,10 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "🎉 MFA verification successful - found %d device(s)",
                         len(devices),
                     )
+                    # Stable per-account unique id so the same Nanit account can't
+                    # be added twice and so reauth can find this entry.
+                    await self.async_set_unique_id(self._email.lower())
+                    self._abort_if_unique_id_configured()
                     # Persist email + refresh_token only — the password is
                     # held only in api._stored_password for the duration of
                     # this session, never written to .storage/core.config_entries.
