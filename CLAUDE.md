@@ -4,6 +4,16 @@ A Home Assistant custom integration for the Nanit Sound + Light. It is a
 `cloud_push` client: it authenticates to the Nanit cloud over REST, then holds a
 protobuf WebSocket to the device for real-time state and control.
 
+> **This is a PUBLIC repository.** Never commit personal names, internal
+> hostnames or domains, the private infrastructure repo this integration is
+> developed alongside, or unrelated private projects — keep it strictly about
+> this integration. A pre-commit leak scan enforces this: `.githooks/leak-scan.sh`
+> blocks any commit whose staged content matches a **gitignored** local denylist
+> (`.leak-denylist.local`, seeded from `.leak-denylist.local.example` — the real
+> terms live only there so they never enter this repo). Enable it per clone with
+> `git config core.hooksPath .githooks`; override a false positive with
+> `LEAK_SCAN_SKIP=1 git commit`.
+
 ## Layout
 
 ```
