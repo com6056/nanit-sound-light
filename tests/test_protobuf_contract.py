@@ -213,14 +213,17 @@ async def test_battery_not_charging_when_field_absent(nsl, api):
     # Start charging.
     s1 = pb2.Message(
         response=pb2.Response(
-            requestId=1, status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50, isCharging=True))
+            requestId=1,
+            status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50, isCharging=True)),
         )
     )
     await api._process_protobuf_message("baby123_speaker", s1.SerializeToString())
     assert api.get_device_state("baby123")["battery_charging"] is True
     # Unplug: next status omits isCharging entirely.
     s2 = pb2.Message(
-        response=pb2.Response(requestId=2, status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50)))
+        response=pb2.Response(
+            requestId=2, status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50))
+        )
     )
     await api._process_protobuf_message("baby123_speaker", s2.SerializeToString())
     assert api.get_device_state("baby123")["battery_charging"] is False
