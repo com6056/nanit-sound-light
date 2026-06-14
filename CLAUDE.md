@@ -27,8 +27,20 @@ custom_components/nanit_sound_light/
   binary_sensor.py # battery charging
   config_flow.py  # auth + MFA + reauth
   sound_light.proto / sound_light_pb2.py   # wire schema (regenerate via ci.sh)
+  brand/          # HA brand images (icon + light/dark wordmark, 1x/2x)
 tests/            # offline test suite (see Testing)
 ```
+
+`brand/` holds the integration's brand images, served in-repo by HA 2026.3+'s
+brands proxy (no `home-assistant/brands` PR needed). They're the official Nanit
+assets extracted from the apps' vector drawables: the **icon** is the standalone
+Sound + Light app's (`com.nanit.lite`) adaptive launcher — the slate-blue lamp
+mark (`ic_launcher_foreground`) on its `#040433` background color — and the
+**wordmark** logo is the main app's `nanit_logotype`. To regenerate from a newer
+APK: decode the binary AXML VectorDrawables (e.g. via `androguard`; resolve the
+adaptive-icon background color from `resources.arsc` via its `ARSCParser`),
+translate to SVG, render with `cairosvg`. Image spec:
+https://github.com/home-assistant/brands.
 
 ## How it works (and what NOT to undo)
 

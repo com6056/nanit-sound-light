@@ -142,7 +142,16 @@ class NanitSoundLightWifiSensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the WiFi sensor."""
-        super().__init__(coordinator, device_uid, device_data, "wifi", "mdi:wifi")
+        # unique_id stays "…_wifi" (stable); display name is the HA device-class
+        # convention "Signal strength" (matches how core/most integrations name it).
+        super().__init__(
+            coordinator,
+            device_uid,
+            device_data,
+            "wifi",
+            "mdi:wifi",
+            display_name="Signal strength",
+        )
         self._attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
         self._attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
         self._attr_state_class = SensorStateClass.MEASUREMENT

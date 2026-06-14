@@ -84,7 +84,12 @@ def test_response_status_tag_matches_app(nsl):
 
 
 async def test_backend_connected_frame_marks_device_attached(nsl, api):
-    """A Backend{Connected} frame flips is_device_attached; Disconnected clears it."""
+    """A Backend{Connected} frame attaches; attachment is STICKY thereafter.
+
+    The real device emits bare/Disconnected backend frames periodically while
+    fully usable, so a non-Connected frame must NOT flip the device unavailable —
+    only a socket drop clears attachment (covered in the reconnect suite).
+    """
     pb2 = nsl.pb2
 
     connected = pb2.Message(
@@ -95,13 +100,14 @@ async def test_backend_connected_frame_marks_device_attached(nsl, api):
     )
     assert api.is_device_attached("baby123") is True
 
+    # A later Disconnected/bare frame is ignored — attachment stays sticky.
     disconnected = pb2.Message(
         backend=pb2.Backend(device=pb2.BackendDevice(status=pb2.Disconnected))
     )
     await api._process_protobuf_message(
         "baby123_speaker", disconnected.SerializeToString()
     )
-    assert api.is_device_attached("baby123") is False
+    assert api.is_device_attached("baby123") is True
 
 
 async def test_response_with_requestid_resolves_pending_command(nsl, api):

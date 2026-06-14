@@ -403,9 +403,11 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
         try:
             await self.api.send_control_command(baby_uid, **kwargs)
-            # One confirmation ping per flush (not one per field).
-            await self._ping_device_for_state(baby_uid)
-            # Accepted: drop the rollback snapshot (pins expire on their own).
+            # No confirmation ping: the command's ack already confirms receipt,
+            # and the device pushes the resulting state as a Request{settings}
+            # frame on its own. An extra GetSettings here just added contention
+            # (it competed with the next command for the send lock). The 30s poll
+            # remains a backstop. Accepted -> drop the rollback snapshot.
             self._rollback_snapshot.pop(baby_uid, None)
         except Exception as e:
             error_type = type(e).__name__
