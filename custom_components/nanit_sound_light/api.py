@@ -608,12 +608,18 @@ class SoundLightAPI:
         if self._access_token and not self._is_token_expired():
             return True
 
-        # Token is expired or expiring soon, try to refresh
-        if self._access_token and self._refresh_token and self._is_token_expired():
-            _LOGGER.debug("Token expires soon, attempting refresh...")
+        # Use the refresh token whenever we lack a usable access token. This
+        # covers a fresh startup that carries only the stored refresh token (no
+        # access token, and — since we no longer persist the password — no
+        # credentials to fall back on), as well as an access token that's
+        # expiring. Without this, startup never used the refresh token and the
+        # entry got stuck on "Authentication temporarily unavailable".
+        if self._refresh_token and (not self._access_token or self._is_token_expired()):
+            _LOGGER.debug("Refreshing access token via refresh token...")
             if await self._refresh_auth():
                 return True
-            # If refresh failed, clear the invalid token
+            # Refresh failed. If the token was rejected, _refresh_auth cleared
+            # it (→ needs_reauth → reauth). Otherwise it was transient.
             self._access_token = None
             self._token_expires_at = None
 
