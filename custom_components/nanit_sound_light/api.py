@@ -1363,8 +1363,13 @@ class SoundLightAPI:
         if battery.HasField("soc"):
             device_state["battery_percent"] = _SOC_TO_PERCENT.get(battery.soc)
             _LOGGER.debug("Battery soc bucket=%s", battery.soc)
-        if battery.HasField("isCharging"):
-            device_state["battery_charging"] = battery.isCharging
+        # The device OMITS isCharging when it isn't charging (proto2 drops the
+        # default-false field), so an absent field inside a battery status means
+        # "not charging" — not unknown, and not still-charging from a prior frame.
+        # Set it on every battery status so unplugging flips it back to off.
+        charging = battery.isCharging if battery.HasField("isCharging") else False
+        device_state["battery_charging"] = charging
+        _LOGGER.debug("Battery charging=%s", charging)
 
     @staticmethod
     def _parse_network(device_state: dict[str, Any], network_status) -> None:

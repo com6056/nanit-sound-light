@@ -203,6 +203,29 @@ async def test_battery_status_parses(nsl, api):
     assert state["battery_charging"] is True
 
 
+async def test_battery_not_charging_when_field_absent(nsl, api):
+    """Device omits isCharging when unplugged -> we report not-charging, not unknown.
+
+    Also covers the un-plug transition: a prior charging=True must flip back to
+    False when a later battery status arrives without the field.
+    """
+    pb2 = nsl.pb2
+    # Start charging.
+    s1 = pb2.Message(
+        response=pb2.Response(
+            requestId=1, status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50, isCharging=True))
+        )
+    )
+    await api._process_protobuf_message("baby123_speaker", s1.SerializeToString())
+    assert api.get_device_state("baby123")["battery_charging"] is True
+    # Unplug: next status omits isCharging entirely.
+    s2 = pb2.Message(
+        response=pb2.Response(requestId=2, status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50)))
+    )
+    await api._process_protobuf_message("baby123_speaker", s2.SerializeToString())
+    assert api.get_device_state("baby123")["battery_charging"] is False
+
+
 async def test_network_status_parses(nsl, api):
     """Response{networkStatus{currentAp}} → wifi rssi/ssid/channel in device_state."""
     pb2 = nsl.pb2
