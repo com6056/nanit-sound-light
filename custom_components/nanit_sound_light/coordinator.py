@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from datetime import timedelta
 from typing import Any
 
@@ -36,6 +35,13 @@ COMMAND_COALESCE_DELAY = 0.15  # seconds
 # the device or this integration, so this time-based guard — not the id — is
 # what actually prevents the "turn on → flaps off" race.
 COMMAND_PIN_SECONDS = 3.0
+
+# This is a cloud_push integration: real-time state arrives over the websocket
+# (_on_device_state_change). The periodic poll is only a backup nudge, so it
+# never busy-waits — it waits briefly only when a device has no state yet (first
+# poll, or after a reconnect lost it), capped by these.
+INITIAL_STATE_ATTEMPTS = 6  # × interval ≈ 3s max
+INITIAL_STATE_INTERVAL = 0.5  # seconds
 
 
 class NanitSoundLightCoordinator(DataUpdateCoordinator):
@@ -114,9 +120,14 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         self._pinned_fields: dict[str, dict[str, tuple[Any, float]]] = {}
         self._rollback_snapshot: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _has_usable_state(state: dict[str, Any]) -> bool:
+        """True once the device has reported real state (not just defaults)."""
+        keys = ("brightness", "volume", "current_sound", "hue", "is_on")
+        return bool(state) and any(state.get(k) is not None for k in keys)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Update data via library."""
-        start_time = time.time()
         try:
             # Ensure authentication is valid (will refresh the token if needed).
             if not await self.api.ensure_authenticated():
@@ -156,132 +167,52 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                     baby_uid = device["baby_uid"]
                     await self.api.send_saved_sounds_request(baby_uid)
 
-            # Update device states by sending ping commands
+            # Refresh device state. Nudge each device with a ping; the push
+            # callback applies the response. Only wait when we have no state for
+            # a device yet — never busy-wait on every poll.
             for device in self._devices:
                 baby_uid = device["baby_uid"]
                 try:
-                    # Send ping to request current state and wait for automatic deviceData stream
-                    _LOGGER.debug("Requesting initial state via ping for %s", baby_uid)
-                    await self._ping_device_for_state(baby_uid)
+                    await self.api.send_ping_for_state(baby_uid)
 
-                    # Wait longer for deviceData messages (device might be off or slow to respond)
-                    _LOGGER.debug(
-                        "Waiting for deviceData messages to populate state..."
-                    )
-                    raw_state = {}
-
-                    for attempt in range(20):  # 20 attempts * 0.5s = 10s max
-                        await asyncio.sleep(0.5)
-                        current_state = self.api.get_device_state(baby_uid)
-
-                        # Check if we have ANY meaningful state (even if device is off)
-                        if current_state:
-                            # Accept any state that has been updated from deviceData parsing
-                            # Even if device is off, we should get real "off" state vs. uninitialized defaults
-                            state_keys = [
-                                "brightness",
-                                "volume",
-                                "current_sound",
-                                "hue",
-                                "is_on",
-                                "message_id",
-                            ]
-                            if any(
-                                k in current_state and current_state[k] is not None
-                                for k in state_keys
+                    if not self._has_usable_state(self.api.get_device_state(baby_uid)):
+                        for _ in range(INITIAL_STATE_ATTEMPTS):
+                            await asyncio.sleep(INITIAL_STATE_INTERVAL)
+                            if self._has_usable_state(
+                                self.api.get_device_state(baby_uid)
                             ):
-                                raw_state = current_state
-                                _LOGGER.info(
-                                    "📊 Device %s state acquired in %.1fs: power=%s, brightness=%.1f%%, volume=%.1f%%, sound='%s'",
-                                    device["speaker_name"],
-                                    (attempt + 1) * 0.5,
-                                    "ON" if raw_state.get("is_on", False) else "OFF",
-                                    raw_state.get("brightness", 0) * 100,
-                                    raw_state.get("volume", 0) * 100,
-                                    raw_state.get("current_sound", "None")[:20]
-                                    + (
-                                        "..."
-                                        if len(raw_state.get("current_sound", "")) > 20
-                                        else ""
-                                    ),
-                                )
                                 break
 
-                        # Also check for increasing message IDs (indicates device is responding)
-                        if current_state and current_state.get("message_id"):
-                            if attempt > 0:  # Give it at least one attempt
-                                raw_state = current_state
-                                _LOGGER.info(
-                                    "📡 Device %s responding (message_id=%s, attempt=%.1fs)",
-                                    device["speaker_name"],
-                                    current_state.get("message_id"),
-                                    (attempt + 1) * 0.5,
-                                )
-                                break
-                    else:
-                        _LOGGER.warning(
-                            "⚠️ Device %s unresponsive after 10s - may be offline or in sleep mode",
-                            device["speaker_name"],
-                        )
-                        raw_state = {}
+                    parsed_state = dict(self.api.get_device_state(baby_uid))
 
-                    # Get parsed state from protobuf API (already parsed)
-                    parsed_state = raw_state.copy() if raw_state else {}
-
-                    # Store last good color when device provides color data (not noColor=true)
-                    no_color = parsed_state.get("no_color", False)
+                    # Remember the last real color the device reported.
                     if (
-                        not no_color
+                        not parsed_state.get("no_color", False)
                         and "hue" in parsed_state
                         and "saturation" in parsed_state
                     ):
-                        last_color = {
+                        self._last_colors[baby_uid] = {
                             "hue": parsed_state["hue"],
                             "saturation": parsed_state["saturation"],
                             "brightness": parsed_state.get("brightness", 1.0),
                         }
-                        self._last_colors[baby_uid] = last_color
-                        _LOGGER.debug(
-                            "Stored last color for %s: %s", baby_uid, last_color
-                        )
 
                     # Preserve any prior (incl. still-pinned optimistic) state,
-                    # then overlay the freshly polled state honoring command pins
-                    # so a slow device echo can't undo a just-issued command.
+                    # then overlay the polled state honoring command pins so a
+                    # slow device echo can't undo a just-issued command.
                     merged = {**device, **self._device_states.get(baby_uid, {})}
                     self._merge_device_state(baby_uid, merged, parsed_state)
                     merged["last_update"] = self.hass.loop.time()
                     self._device_states[baby_uid] = merged
 
-                    _LOGGER.debug(
-                        "✅ Updated %s: brightness=%.1f%%, volume=%.1f%%, power=%s, sound='%s'",
-                        device["speaker_name"],
-                        parsed_state.get("brightness", 0.0) * 100,
-                        parsed_state.get("volume", 0.0) * 100,
-                        "ON" if parsed_state.get("is_on", False) else "OFF",
-                        parsed_state.get("current_sound", "None")[:15]
-                        + (
-                            "..."
-                            if len(parsed_state.get("current_sound", "")) > 15
-                            else ""
-                        ),
-                    )
-
                 except Exception as e:
-                    error_type = type(e).__name__
                     _LOGGER.error(
-                        "❌ Failed to update device %s (%s): %s",
+                        "Failed to update device %s (%s): %s",
                         device["speaker_name"],
-                        error_type,
+                        type(e).__name__,
                         e,
                     )
 
-            update_duration = time.time() - start_time
-            _LOGGER.debug(
-                "📈 Update cycle completed in %.2fs for %d devices",
-                update_duration,
-                len(self._devices),
-            )
             return {"devices": self._device_states}
 
         except AuthenticationError as e:
