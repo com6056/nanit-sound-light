@@ -16,9 +16,16 @@
           "mfa_code": "Verification Code"
         }
       },
+      "reauth_confirm": {
+        "title": "Re-authentication Required",
+        "description": "Your session for {email} has expired. Re-enter your Nanit password to reconnect.",
+        "data": {
+          "password": "Password"
+        }
+      },
       "reauth_mfa": {
         "title": "Re-authentication Required",
-        "description": "Your session has expired and MFA is required. Enter the verification code sent to {email}",
+        "description": "Enter the verification code sent to {email}",
         "data": {
           "mfa_code": "Verification Code"
         }

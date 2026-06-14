@@ -1311,6 +1311,23 @@ class SoundLightAPI:
         """Check if MFA authentication is pending."""
         return self._pending_mfa_token is not None
 
+    def needs_reauth(self) -> bool:
+        """True when recovery requires the user to re-authenticate.
+
+        Either MFA is pending, or we hold no usable token (the refresh token
+        was rejected or never issued) and have no stored password to silently
+        re-authenticate with. A transient network error during refresh leaves
+        the refresh token in place, so this stays False and the caller can keep
+        using cached data instead of forcing a reauth.
+        """
+        if self._pending_mfa_token is not None:
+            return True
+        return (
+            self._access_token is None
+            and self._refresh_token is None
+            and not self.has_stored_credentials()
+        )
+
     async def complete_pending_mfa(self, mfa_code: str) -> bool:
         """Complete pending MFA authentication."""
         if not self._pending_mfa_token:

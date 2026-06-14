@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
 
 from .api import PROTOBUF_AVAILABLE
 from .const import DOMAIN
@@ -38,58 +35,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         return False
 
-    # Get version from manifest to avoid hardcoding
-    manifest_path = Path(__file__).parent / "manifest.json"
-    try:
-        # Use executor to avoid blocking the event loop
-        def _load_manifest():
-            with open(manifest_path) as f:
-                return json.load(f)
-
-        manifest = await hass.async_add_executor_job(_load_manifest)
-        version = manifest.get("version", "unknown")
-    except Exception:
-        version = "unknown"
-
-    _LOGGER.info("🚀 Setting up Nanit Sound + Light integration v%s", version)
-
-    # Initialize coordinator
     coordinator = NanitSoundLightCoordinator(hass, entry)
+    # Raises ConfigEntryNotReady on a transient failure (HA retries) or
+    # ConfigEntryAuthFailed when the user must re-authenticate (HA opens the
+    # reauth flow) — see the coordinator's _async_update_data.
+    await coordinator.async_config_entry_first_refresh()
 
-    # Fetch initial data
-    _LOGGER.debug("⚡ Performing initial data refresh...")
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except Exception as e:
-        # Check if this is an MFA-related issue during initial setup
-        if coordinator.api.is_mfa_pending():
-            _LOGGER.info(
-                "🔐 MFA required during initial setup - please reconfigure integration"
-            )
-            # Create a repair issue to guide the user
-            ir.async_create_issue(
-                hass,
-                DOMAIN,
-                f"mfa_required_{entry.entry_id}",
-                is_fixable=True,
-                severity=ir.IssueSeverity.ERROR,
-                translation_key="mfa_required_setup",
-                data={"entry_id": entry.entry_id},
-            )
-            return False
-        else:
-            _LOGGER.error("💥 Failed to setup integration: %s", e)
-            return False
-
-    # Store coordinator
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
-
-    # Set up platforms
-    _LOGGER.debug("📱 Setting up platforms: %s", PLATFORMS)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    _LOGGER.info("✅ Nanit Sound + Light integration setup complete")
     return True
 
 

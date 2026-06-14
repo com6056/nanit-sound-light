@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -174,107 +173,79 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"email": self._email},
         )
 
-    async def async_step_reauth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle reauth flow when MFA is required for re-authentication."""
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+        """Start reauth: re-prompt for the password (the email is known)."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
         )
-
-        if not self._reauth_entry:
+        if self._reauth_entry is None:
             return self.async_abort(reason="reauth_failed")
+        self._email = self._reauth_entry.data.get(CONF_EMAIL)
+        return await self.async_step_reauth_confirm()
 
-        # Get the coordinator to check if MFA is pending
-        # The coordinator might not be stored yet if the reauth flow was triggered
-        # during setup. Give it a moment and check a few times.
-        coordinator = None
-        for attempt in range(5):  # Try for up to 2.5 seconds
-            if DOMAIN in self.hass.data:
-                coordinator = self.hass.data[DOMAIN].get(self._reauth_entry.entry_id)
-                if coordinator:
-                    break
-            _LOGGER.debug(
-                "🔄 Waiting for coordinator to be available (attempt %d/5)", attempt + 1
-            )
-            await asyncio.sleep(0.5)
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Collect the password and re-authenticate the existing account."""
+        errors: dict[str, str] = {}
 
-        if not coordinator:
-            _LOGGER.warning("🚫 Coordinator not found after waiting - aborting reauth")
-            return self.async_abort(reason="reauth_failed")
+        if user_input is not None:
+            self._password = user_input[CONF_PASSWORD]
+            try:
+                session = async_get_clientsession(self.hass)
+                api = SoundLightAPI(session)
+                await api.authenticate(self._email, self._password)
+                return await self._reauth_finish(api)
+            except MfaRequiredError as mfa_error:
+                self._mfa_token = mfa_error.mfa_token
+                return await self.async_step_reauth_mfa()
+            except AuthenticationError:
+                errors["base"] = "invalid_auth"
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.error("Unexpected error during reauth: %s", e)
+                errors["base"] = "cannot_connect"
 
-        if not coordinator.api.is_mfa_pending():
-            return self.async_abort(reason="no_mfa_pending")
-
-        # Set the unique ID for this reauth flow to prevent duplicates
-        await self.async_set_unique_id(self._reauth_entry.unique_id)
-        self._abort_if_unique_id_configured()
-
-        # Show MFA form for reauth
-        return await self.async_step_reauth_mfa()
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+            description_placeholders={"email": self._email or ""},
+        )
 
     async def async_step_reauth_mfa(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle MFA input during reauth."""
+        """Complete MFA during reauth."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            mfa_code = user_input[CONF_MFA_CODE]
-
-            # Get coordinator with retry logic
-            coordinator = None
-            for attempt in range(5):  # Try for up to 2.5 seconds
-                if DOMAIN in self.hass.data:
-                    coordinator = self.hass.data[DOMAIN].get(
-                        self._reauth_entry.entry_id
-                    )
-                    if coordinator:
-                        break
-                _LOGGER.debug(
-                    "🔄 Waiting for coordinator during MFA completion (attempt %d/5)",
-                    attempt + 1,
+            try:
+                session = async_get_clientsession(self.hass)
+                api = SoundLightAPI(session)
+                await api.complete_mfa_authentication(
+                    self._email,
+                    self._password,
+                    self._mfa_token,
+                    user_input[CONF_MFA_CODE],
                 )
-                await asyncio.sleep(0.5)
-
-            if coordinator:
-                try:
-                    # Complete pending MFA authentication
-                    success = await coordinator.api.complete_pending_mfa(mfa_code)
-
-                    if success:
-                        _LOGGER.info(
-                            "🎉 MFA re-authentication successful - integration resumed"
-                        )
-                        # Clear the persistent notification
-                        await self.hass.services.async_call(
-                            "persistent_notification",
-                            "dismiss",
-                            {
-                                "notification_id": f"nanit_mfa_{self._reauth_entry.entry_id}"
-                            },
-                        )
-
-                        # Trigger coordinator refresh to resume normal operation
-                        await coordinator.async_request_refresh()
-                        return self.async_abort(reason="reauth_successful")
-                    else:
-                        _LOGGER.warning(
-                            "🚫 MFA re-authentication failed - invalid code"
-                        )
-                        errors["base"] = "invalid_mfa"
-
-                except Exception as e:
-                    _LOGGER.error("💥 Reauth MFA verification failed: %s", e)
-                    errors["base"] = "invalid_mfa"
-            else:
-                errors["base"] = "reauth_failed"
+                return await self._reauth_finish(api)
+            except AuthenticationError:
+                errors["base"] = "invalid_mfa"
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.error("Unexpected error during reauth MFA: %s", e)
+                errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id="reauth_mfa",
             data_schema=STEP_MFA_DATA_SCHEMA,
             errors=errors,
-            description_placeholders={
-                "email": self._reauth_entry.data.get(CONF_EMAIL, "")
-            },
+            description_placeholders={"email": self._email or ""},
         )
+
+    async def _reauth_finish(self, api: SoundLightAPI) -> FlowResult:
+        """Persist the refreshed token, reload the entry, and finish reauth."""
+        new_data = dict(self._reauth_entry.data)
+        new_data[CONF_EMAIL] = self._email
+        if api._refresh_token:
+            new_data["refresh_token"] = api._refresh_token
+        return self.async_update_reload_and_abort(self._reauth_entry, data=new_data)

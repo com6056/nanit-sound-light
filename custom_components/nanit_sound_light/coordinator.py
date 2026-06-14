@@ -14,6 +14,7 @@ from homeassistant.const import (  # noqa: F401  # CONF_PASSWORD kept for legacy
     CONF_PASSWORD,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -86,11 +87,10 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         if refresh_token:
             self.api._refresh_token = refresh_token
 
-        # Set up token update callback
+        # Persist rotated refresh tokens back to the config entry.
         self.api.set_token_update_callback(self.update_stored_refresh_token)
-
-        # Set up MFA callback immediately - we need this for token refresh scenarios
-        self.api.set_mfa_required_callback(self._trigger_mfa_reauth)
+        # Reauth is driven by ConfigEntryAuthFailed from _async_update_data (HA
+        # opens the reauth flow), so no manual MFA callback is registered here.
 
         self._devices: list[dict[str, Any]] = []
         self._device_states: dict[str, dict[str, Any]] = {}
@@ -118,29 +118,23 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         """Update data via library."""
         start_time = time.time()
         try:
-            # Ensure authentication is valid (will refresh or re-authenticate if needed)
+            # Ensure authentication is valid (will refresh the token if needed).
             if not await self.api.ensure_authenticated():
-                # If ensure_authenticated returns False, it means we're in a retry backoff
-                # or MFA is pending - don't raise an exception immediately
-                if self.api.is_mfa_pending():
-                    _LOGGER.info(
-                        "🔐 MFA authentication pending - integration paused until user completes verification"
+                if self.api.needs_reauth():
+                    # The user must act (MFA, or a rejected refresh token with no
+                    # stored password). Raising ConfigEntryAuthFailed makes HA
+                    # start the reauth flow.
+                    raise ConfigEntryAuthFailed(
+                        "Re-authentication required for Nanit Sound + Light"
                     )
-                else:
+                # Otherwise it's transient (network blip or auth backoff): keep
+                # serving cached data, or report not-ready if we have none yet.
+                if self.data:
                     _LOGGER.warning(
-                        "⚠️ Authentication unavailable (rate limited or failed) - using cached data"
+                        "Authentication temporarily unavailable - using cached data"
                     )
-
-                if hasattr(self, "data") and self.data:
                     return self.data
-
-                # During initial setup or when no cached data exists, we need to handle MFA differently
-                # If MFA is pending, we should return a minimal state to prevent constant retries
-                if self.api.is_mfa_pending():
-                    # Return a minimal state that indicates MFA is needed
-                    return {"mfa_required": True, "devices": {}}
-
-                raise UpdateFailed("Authentication failed and no cached data available")
+                raise UpdateFailed("Authentication temporarily unavailable")
 
             # Get device list if needed
             if not self._devices:
@@ -291,7 +285,9 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             return {"devices": self._device_states}
 
         except AuthenticationError as e:
-            raise UpdateFailed(f"Authentication failed: {e}")
+            raise ConfigEntryAuthFailed(f"Authentication failed: {e}")
+        except (ConfigEntryAuthFailed, UpdateFailed):
+            raise
         except Exception as e:
             raise UpdateFailed(f"Error communicating with API: {e}")
 
@@ -321,32 +317,6 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Missing required configuration field: %s", CONF_EMAIL)
             return False
         return True
-
-    async def _trigger_mfa_reauth(self) -> None:
-        """Trigger MFA re-authentication flow via Home Assistant."""
-        _LOGGER.info(
-            "🔐 MFA re-authentication required - creating user notification and reauth flow"
-        )
-
-        # Create a persistent notification to inform the user
-        await self.hass.services.async_call(
-            "persistent_notification",
-            "create",
-            {
-                "message": "Your Nanit Sound + Light integration requires MFA verification to continue. Please complete the authentication flow.",
-                "title": "Nanit Authentication Required",
-                "notification_id": f"nanit_mfa_{self.config_entry.entry_id}",
-            },
-        )
-
-        # Create a reauth flow to prompt user for MFA
-        self.hass.async_create_task(
-            self.hass.config_entries.flow.async_init(
-                DOMAIN,
-                context={"source": "reauth", "entry_id": self.config_entry.entry_id},
-                data={},
-            )
-        )
 
     async def _ping_device_for_state(self, baby_uid: str) -> None:
         """Send ping command to get current device state using protobuf."""
