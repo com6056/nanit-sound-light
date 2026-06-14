@@ -8,16 +8,17 @@
 
 _Control your Nanit Sound + Light devices directly from Home Assistant._
 
-**This integration focuses exclusively on Nanit Sound + Light devices** and provides complete control over lighting, sound, and environmental monitoring.
+**This integration focuses exclusively on Nanit Sound + Light devices** and provides control over lighting, sound, power, and environmental monitoring. (It does not control Nanit cameras.)
 
 ## Features
 
-- 💡 **Light Control** - Full brightness and color adjustment
-- 🔊 **Sound Control** - Volume and sound selection with 11+ built-in options
-- ⚡ **Power Management** - Complete device on/off control
-- 🌡️ **Environmental Sensors** - Temperature and humidity monitoring
-- 🔐 **Secure Authentication** - Full MFA support with automatic token refresh
-- 🔄 **Real-time Updates** - Instant state synchronization
+- 💡 **Light control** — brightness and color
+- 🔊 **Sound control** — volume and sound selection (the options available on your device)
+- ⚡ **Power control** — turn the device on and off
+- 🌡️ **Environmental sensors** — temperature and humidity
+- 🔄 **Real-time updates** — state changes pushed over a WebSocket, no polling lag
+- 🔐 **Secure authentication** — MFA supported, with automatic token refresh and a re-authentication prompt when needed
+- 🔁 **Resilient connection** — automatic reconnect with backoff so transient cloud/network drops recover on their own
 
 ## Installation
 
@@ -44,32 +45,27 @@ _Control your Nanit Sound + Light devices directly from Home Assistant._
 
 ## Configuration
 
-The integration will guide you through the setup process:
+The integration guides you through setup:
 
-1. **Account Credentials** - Enter your Nanit email and password
-2. **MFA (if enabled)** - Enter the verification code sent to your email
-3. **Device Discovery** - Your Sound + Light devices will be automatically discovered
+1. **Account credentials** — enter your Nanit email and password
+2. **MFA (if enabled)** — enter the verification code Nanit emails you
+3. **Device discovery** — your Sound + Light devices are discovered automatically
 
-If your session expires, the integration will automatically handle re-authentication, including MFA if required.
+The same Nanit account can only be added once. If your saved session can no longer be refreshed, Home Assistant prompts you to re-enter your password (and MFA, if required) — no need to delete and re-add the integration.
 
 ## Supported Entities
 
-| Entity Type | Description                                     |
-| ----------- | ----------------------------------------------- |
-| **Light**   | Brightness (0-100%) and color control (HSB)     |
-| **Switch**  | Device power on/off                             |
-| **Number**  | Volume control (0-100%)                         |
-| **Select**  | Sound selection (No sound + 11 built-in sounds) |
-| **Sensor**  | Temperature and humidity monitoring             |
+Each Sound + Light device is exposed as several entities:
 
-## Why Sound + Light Only?
+| Entity Type | Description                                   |
+| ----------- | --------------------------------------------- |
+| **Light**   | Brightness (0–100%) and color (HS)            |
+| **Switch**  | Device power on/off                           |
+| **Number**  | Volume (0–100%)                               |
+| **Select**  | Sound selection (the device's available list) |
+| **Sensor**  | Temperature and humidity                      |
 
-This integration is specifically designed for Nanit Sound + Light devices to provide:
-
-- **Reliable Communication** - Direct protobuf protocol with Nanit's speaker WebSocket service
-- **Complete Control** - All device functions fully implemented and tested
-- **Real-time Updates** - Instant state changes without polling delays
-- **Clean Architecture** - Focused scope without camera complexity
+Entities go **unavailable** when the device can't be reached, rather than showing the last-known values as if they were live.
 
 ## Troubleshooting
 
@@ -87,12 +83,12 @@ Then restart Home Assistant and check **Settings** → **System** → **Logs**.
 
 ### Common Issues
 
-| Issue                 | Solution                                                    |
-| --------------------- | ----------------------------------------------------------- |
-| Authentication failed | Verify credentials; delete and re-add integration if needed |
-| Invalid MFA code      | Use the 4-digit code from email (not SMS)                   |
-| No devices found      | Ensure device is paired and online in the Nanit app         |
-| Connection timeout    | Check network connectivity and device status                |
+| Issue                 | Solution                                                         |
+| --------------------- | ---------------------------------------------------------------- |
+| Authentication failed | Re-enter your password when Home Assistant prompts for reauth    |
+| Invalid MFA code      | Use the latest verification code from your email (not SMS)       |
+| No devices found      | Ensure the device is paired and online in the Nanit app          |
+| Entity unavailable    | Usually a transient cloud/network drop; it reconnects on its own |
 
 ### Getting Help
 
@@ -104,14 +100,14 @@ When reporting issues, please include:
 
 ## Contributions
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please open an issue or submit a Pull Request. Run the test suites with `./tests/run.sh` and `./tests_ha/run.sh` (both run in a throwaway container and never touch a real device).
 
 ## Credits
 
-- **Original Nanit integration**: [@indiefan](https://github.com/indiefan) - [home_assistant_nanit](https://github.com/indiefan/home_assistant_nanit)
-- **Sound + Light protocol**: Reverse-engineered from APK analysis
+- **Original Nanit integration**: [@indiefan](https://github.com/indiefan) — [home_assistant_nanit](https://github.com/indiefan/home_assistant_nanit)
+- **Sound + Light protocol**: independently reverse-engineered for interoperability
 
-This integration builds upon the foundational work of the original Nanit integration while focusing specifically on Sound + Light devices.
+This integration builds on the foundational work of the original Nanit integration while focusing specifically on Sound + Light devices.
 
 ---
 

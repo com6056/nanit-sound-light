@@ -53,7 +53,7 @@ fix two real, recurring failures — don't revert these without understanding wh
 - Control + state ride on a protobuf `Message { request, response }`; control is
   `Request.settings`, device state arrives as `Response.settings`.
 - `Settings` fields used here: `brightness=1, color=2, volume=3, sound=4, isOn=5,
-  soundList=6, temperature=7, humidity=8`. Newer firmware/app builds **append**
+soundList=6, temperature=7, humidity=8`. Newer firmware/app builds **append**
   higher-numbered fields; protobuf skips unknown tags, so the schema above stays
   correct and `sound_light.proto` does not need changes for them.
 - Secrets: the account password is **not** persisted to `.storage` (only email +
@@ -103,7 +103,6 @@ Addressed in the pre-release pass:
 - Coordinator/entity behavior is covered by the `tests_ha/` Home Assistant fixture
   suite (coalescing, pin-guard, rollback, availability, auth/reauth, poll).
 
-Still nice-to-have before tagging a release: soften the README's hardcoded
-sound-count / "tested" claims, set a real `LICENSE` holder/year, and consider a
-manifest `quality_scale`.
-```
+A manifest `quality_scale` is intentionally omitted — it's a formal HA
+assessment against documented rules, not a self-asserted label, so it's left off
+rather than claimed.
