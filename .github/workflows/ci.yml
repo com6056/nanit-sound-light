@@ -79,3 +79,20 @@ jobs:
 
       - name: Pytest
         run: python -m pytest -q
+
+  tests-ha:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install test deps (Home Assistant fixtures)
+        run: pip install -r requirements-test-ha.txt
+
+      - name: Pytest (Home Assistant fixtures)
+        run: python -m pytest tests_ha -q

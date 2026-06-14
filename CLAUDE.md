@@ -75,8 +75,15 @@ test that resolves `*.nanit.com`.
 - `test_websocket_reconnect.py` — reconnect backoff, send reaches socket, and
   proactive reconnect after a server drop (against an in-process fake server).
 
+The heavier **Home Assistant fixture** suite lives in `tests_ha/` (it installs
+Home Assistant, so it's a separate run — `./tests_ha/run.sh`). It drives the real
+coordinator/entities with a mocked api to cover the logic the offline suite can't:
+command coalescing, the pin-guard, optimistic rollback on a failed send, and
+entity availability. Keep the two suites in separate processes — both import the
+generated protobuf module and would double-register its descriptors otherwise.
+
 CI (`.github/workflows/ci.yml`) runs ruff + prettier + protobuf-drift check +
-hassfest + HACS validation + the pytest job. Regenerate the protobuf with `ci.sh`.
+hassfest + HACS validation + both pytest jobs. Regenerate the protobuf with `ci.sh`.
 
 ## Release-polish TODO (before a public release)
 

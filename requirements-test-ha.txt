@@ -1,0 +1,11 @@
+# Heavier test deps for the Home-Assistant-fixture suite in tests_ha/ (coordinator
+# and entity behavior that needs a real hass event loop). Pulls in Home Assistant,
+# so it's slower than the offline suite in tests/ — run it separately
+# (tests_ha/run.sh), not in the same process as tests/ (they'd double-register the
+# protobuf descriptors).
+pytest
+pytest-asyncio
+pytest-homeassistant-custom-component
+# The integration's own runtime requirements (manifest.json) — needed to import it.
+websockets>=10.0
+protobuf>=3.19.0
