@@ -175,6 +175,14 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                 try:
                     await self.api.send_ping_for_state(baby_uid)
 
+                    # Diagnostics (separate query types, best-effort). Battery +
+                    # wifi change over time so poll them each cycle; firmware is
+                    # effectively static, so fetch it once (when still unknown).
+                    await self.api.send_status_request(baby_uid)
+                    await self.api.send_network_request(baby_uid)
+                    if "firmware_version" not in self.api.get_device_state(baby_uid):
+                        await self.api.send_firmware_request(baby_uid)
+
                     if not self._has_usable_state(self.api.get_device_state(baby_uid)):
                         for _ in range(INITIAL_STATE_ATTEMPTS):
                             await asyncio.sleep(INITIAL_STATE_INTERVAL)

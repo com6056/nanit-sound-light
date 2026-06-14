@@ -12,7 +12,9 @@ custom_components/nanit_sound_light/
   coordinator.py  # DataUpdateCoordinator: device state, command coalescing, pins
   entity.py       # CoordinatorEntity base
   switch.py       # power            light.py   # brightness + color
-  select.py       # sound track      number.py  # volume      sensor.py  # temp/humidity
+  select.py       # sound track      number.py  # volume
+  sensor.py       # temp, humidity, battery %, wifi RSSI, firmware version
+  binary_sensor.py # battery charging
   config_flow.py  # auth + MFA + reauth
   sound_light.proto / sound_light_pb2.py   # wire schema (regenerate via ci.sh)
 tests/            # offline test suite (see Testing)
@@ -24,6 +26,30 @@ One physical device is exposed as several HA entities (switch/light/select/numbe
 all backed by one coordinator + one websocket. The non-obvious design exists to
 fix two real, recurring failures — don't revert these without understanding why:
 
+- **Backend readiness gate.** On a fresh remote connect the device's first frame
+  is `Message{backend}` reporting whether the physical device is attached behind
+  the relay (`Backend.device.status`: `Disconnected=0`/`Connected=1`). The official
+  app sends **nothing** until `Connected` — firing `GetSettings`/commands into a
+  still-`Disconnected` relay is what produced our command latency. So `connect_device`
+  no longer pings on open; `is_device_attached()` latches on the backend `Connected`
+  frame (and, defensively, on any genuine `Response`), `wait_for_device_attached()`
+  gates sends, and entity `available` requires it. A command still falls back to a
+  best-effort send if the frame never arrives (a missed/renamed frame mustn't brick
+  control), but the ack-await below then surfaces any real failure.
+- **One request in flight + await-ack.** Mirrors the app's `SocketRequestManager`:
+  **every** send (control AND the state-ping / saved-sounds polls) goes through one
+  `_transact` helper that registers a future keyed by the message id, sends, then
+  **awaits the `Response` whose `requestId` matches** (`COMMAND_ACK_TIMEOUT`, 10s),
+  under a per-device send lock so transactions never overlap on the wire. Control
+  sends `require_ack=True` (a non-2xx status or timeout **raises** → coordinator
+  rolls back the optimistic UI); polls send `require_ack=False` (still serialized +
+  drained, but a timeout/non-2xx is swallowed). The app awaits every request incl.
+  `GetSettings`; a poll that released the lock before its response (the old behavior)
+  could overlap a command unacked — the exact "bursts of unacked transactions" that
+  wedge the device. Don't reintroduce a send that bypasses `_transact`. (The
+  `requestId` correlation is real now — distinct from the pin-guard's id, which stays
+  logging-only. All requests use unique ids via `_next_message_id`, starting at 1 like
+  the app's `AtomicInteger`; `sessionId` is a random per-connection token.)
 - **Command coalescing.** A scene toggles power + sound + volume + light at once.
   Sent as separate protobuf messages they race, and out-of-order responses make
   the device end up in the wrong state (classic symptom: a "turn on" scene leaves
@@ -41,6 +67,17 @@ fix two real, recurring failures — don't revert these without understanding wh
 - **Optimistic + rollback.** Commands apply optimistic state immediately for a
   snappy UI; a failed send rolls that back so the UI never shows a state the
   device didn't accept.
+- **Power vs light on/off.** The device has a single power primitive, `isOn`,
+  owned by the **switch** (`switch.turn_on/off` → bare `Settings{isOn}`). The
+  **light** is disabled independently via `color.noColor` so white noise keeps
+  playing when you turn the light off — `light.turn_off` sends a bare
+  `Settings{color{noColor: true}}` (NOT the old `noColor + brightness:1.0`, whose
+  `brightness:1.0` was ambiguous and didn't move the right read-back).
+  `build_control_message` omits any color sub-field not provided, so the device's
+  stored color survives an off/on cycle. `light.turn_on` keeps the "set
+  `sound:'No sound'` when the device was off" guard so flipping the light on
+  doesn't unexpectedly resume audio (intentional divergence from the app, which
+  sends bare `isOn`).
 - **WebSocket keepalive / reconnect.** The device keeps its socket alive with
   **protocol-level ping/pong (~20s)** — there is no app-level keepalive frame, so
   rely on the WS ping (`WS_PING_INTERVAL`), don't invent a heartbeat message. On a
@@ -50,8 +87,11 @@ fix two real, recurring failures — don't revert these without understanding wh
 
 ## Protocol facts worth knowing
 
-- Control + state ride on a protobuf `Message { request, response }`; control is
-  `Request.settings`, device state arrives as `Response.settings`.
+- Control + state ride on a protobuf `Message { request, response, backend }`;
+  control is `Request.settings`, device state arrives as `Response.settings`, and
+  `backend` is the readiness frame (`Backend.device.status`). `Message.backend` was
+  `bytes` and is now a structured `Backend` message at the **same tag 3** — both
+  are wire type 2, so the change is wire-compatible.
 - `Settings` fields used here: `brightness=1, color=2, volume=3, sound=4, isOn=5,
 soundList=6, temperature=7, humidity=8`. Newer firmware/app builds **append**
   higher-numbered fields; protobuf skips unknown tags, so the schema above stays
@@ -59,6 +99,21 @@ soundList=6, temperature=7, humidity=8`. Newer firmware/app builds **append**
 - Secrets: the account password is **not** persisted to `.storage` (only email +
   refresh token); auth responses are redacted before debug logging. Keep it that
   way.
+- **Diagnostics ride separate query requests, NOT the GetSettings poll.** Battery
+  (`sensor` % + `binary_sensor` charging), wifi RSSI (`sensor`, diagnostic, SSID/
+  BSSID/channel as attrs, registry-disabled by default), and firmware version
+  (`sensor`, diagnostic) come from three distinct request types the coordinator
+  poll issues best-effort: `GetStatus{all:true}` → `Response.status.battery`
+  (`StateOfCharge` is a coarse 5-bucket enum → `_SOC_TO_PERCENT`), `Network{getStatus}`
+  → `Response.networkStatus.currentAp`, `Firmware{info}` → `Response.firmware`
+  (a bare `FirmwareInfo`). The `info`/`getStatus` request fields are present-but-
+  empty `Empty` markers (`SetInParent()`). Battery+wifi poll every cycle; firmware
+  is fetched once (it's static). All go through `_transact` with a shorter
+  `DIAGNOSTICS_ACK_TIMEOUT` so a firmware that ignores them can't hold the send
+  lock. **Tags are from the app's `@ProtoNumber` descriptors, NOT element-index+1**
+  (that heuristic is off-by-one whenever a message has explicit `@ProtoNumber` or a
+  high-tag field like `sessionId=200` — `Request.getStatus=11`, `Response.firmware=6`,
+  `networkStatus=8`, `status=9`).
 
 ## Testing
 
@@ -70,10 +125,14 @@ test that resolves `*.nanit.com`.
 ./tests/run.sh -k color   # extra args pass through to pytest
 ```
 
-- `test_protobuf_contract.py` — schema lock (proto tags) + parse round-trip.
-- `test_control_message.py` — combined-command atomicity + id monotonicity.
+- `test_protobuf_contract.py` — schema lock (proto tags, incl. `backend`) + parse
+  round-trip + backend-frame → `is_device_attached` + Response→pending-ack resolve.
+- `test_control_message.py` — combined-command atomicity + id monotonicity + the
+  bare-`noColor` light-off encoding + `sessionId` stamping.
 - `test_websocket_reconnect.py` — reconnect backoff, send reaches socket, and
-  proactive reconnect after a server drop (against an in-process fake server).
+  proactive reconnect after a server drop (against an in-process fake server that
+  now also sends a backend `Connected` frame and acks control requests). Covers the
+  attach gate, ack-on-success, non-2xx rejection, and ack-timeout.
 
 The heavier **Home Assistant fixture** suite lives in `tests_ha/` (it installs
 Home Assistant, so it's a separate run — `./tests_ha/run.sh`). It drives the real

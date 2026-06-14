@@ -22,6 +22,13 @@ async def test_unavailable_when_socket_down(hass, coordinator):
     assert _switch(coordinator).available is False
 
 
+async def test_unavailable_when_device_not_attached(hass, coordinator):
+    """Relay up but the physical device detached behind it -> unavailable, not stale."""
+    coordinator.api.is_websocket_connected.return_value = True
+    coordinator.api.is_device_attached.return_value = False
+    assert _switch(coordinator).available is False
+
+
 async def test_unavailable_when_last_update_failed(hass, coordinator):
     coordinator.api.is_websocket_connected.return_value = True
     coordinator.last_update_success = False

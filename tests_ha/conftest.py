@@ -43,8 +43,12 @@ def _make_api() -> MagicMock:
     api = MagicMock()
     api.send_control_command = AsyncMock()
     api.send_ping_for_state = AsyncMock()
+    api.send_status_request = AsyncMock()
+    api.send_network_request = AsyncMock()
+    api.send_firmware_request = AsyncMock()
     api.get_device_state = MagicMock(return_value={})
     api.is_websocket_connected = MagicMock(return_value=True)
+    api.is_device_attached = MagicMock(return_value=True)
     api.close = AsyncMock()
     return api
 

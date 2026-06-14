@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import secrets
 import ssl
 import time
 from typing import Any
@@ -61,6 +62,32 @@ def _redact_response_for_log(body: str | dict) -> str:
 WS_PING_INTERVAL = 20  # seconds
 WS_PING_TIMEOUT = 20  # seconds — drop a half-open socket instead of wedging
 WS_CLOSE_TIMEOUT = 5  # seconds
+
+# Command transaction model, mirroring the official app's SocketRequestManager:
+# send ONE Request, then await the Response whose requestId matches (one in
+# flight, drain each response). The app uses a 10s ack timeout. Fire-and-forget
+# sends with undrained responses degrade the device's transaction state until it
+# wedges (needs a power cycle) — this is the fix for that.
+COMMAND_ACK_TIMEOUT = 10  # seconds to await a matching Response
+
+# device.status enum value from Backend.device (Disconnected=0, Connected=1).
+# The app derives "remote route is live" solely from this and sends nothing
+# until Connected; sending into a still-Disconnected relay is what caused our
+# command latency. We wait up to this long for the Connected frame before a
+# command, then send best-effort (a missed/changed backend frame must not brick
+# control — see send_control_command).
+_BACKEND_STATUS_CONNECTED = 1
+DEVICE_ATTACH_TIMEOUT = 10  # seconds to wait for backend Connected before a send
+
+# Diagnostics (battery/wifi/firmware) ride separate query requests, not the
+# GetSettings poll. They're best-effort with a shorter ack window so an older
+# firmware that ignores a query can't hold the per-device send lock for the full
+# command timeout each poll.
+DIAGNOSTICS_ACK_TIMEOUT = 5  # seconds
+
+# Battery state-of-charge is a coarse 5-bucket enum (StateOfCharge); map each to
+# a representative percentage. SoCLow has no number in its name → ~10% (low).
+_SOC_TO_PERCENT = {0: 10, 1: 25, 2: 50, 3: 75, 4: 90}
 
 # Reconnect backoff, mirroring the official app's
 # RemoteControlSocketCandidate.getNextRetryTime: 0s, then 2s, 5s, capped at 7s.
@@ -138,7 +165,8 @@ class SoundLightAPI:
         self._password: str | None = None
         self._websockets: dict[str, websockets.WebSocketServerProtocol] = {}
         self._device_state: dict[str, dict[str, Any]] = {}
-        self._message_id = 1
+        # Mirrors the app's AtomicInteger(0): first _next_message_id() returns 1.
+        self._message_id = 0
         self._state_change_callback = None  # Callback for real-time updates
         self._last_auth_failure = None  # Track last auth failure time
         self._auth_retry_count = 0  # Track consecutive auth failures
@@ -167,6 +195,32 @@ class SoundLightAPI:
         # the handler could be garbage-collected mid-run and silently stop
         # delivering device pushes.
         self._handler_tasks: dict[str, asyncio.Task] = {}
+
+        # Backend readiness gate. The device's first frame after a remote connect
+        # is Message{backend} reporting whether the physical device is attached
+        # behind the relay; we must not send until it's Connected (else commands
+        # stall = latency). `_device_attached` is the latched bool, `_attached_events`
+        # lets a pending send await the Connected transition.
+        self._device_attached: dict[str, bool] = {}
+        self._attached_events: dict[str, asyncio.Event] = {}
+        # The backend frame is authoritative for DETACH: once it says
+        # Disconnected, a late/buffered Response must not re-latch "attached"
+        # (that would re-open the send gate into a relay the device just told us
+        # is dead, reintroducing the latency the gate exists to prevent). Stays
+        # False until an explicit Disconnected frame, so the Response-implies-
+        # attached inference still bootstraps when no backend frame is seen.
+        self._backend_detached: dict[str, bool] = {}
+
+        # One command in flight per device + request/response correlation. A
+        # send registers a future keyed by its message id; the message handler
+        # resolves it when the matching Response arrives (drain each response).
+        self._send_locks: dict[str, asyncio.Lock] = {}
+        self._pending_responses: dict[str, dict[int, asyncio.Future]] = {}
+
+        # Random per-connection sessionId, mirroring the app (a per-launch
+        # SecureRandom token). The device tolerates a null sessionId in
+        # responses, but stamping a fresh one per socket matches the app.
+        self._session_ids: dict[str, str] = {}
 
     def has_stored_credentials(self) -> bool:
         """Check if we have stored credentials for re-authentication."""
@@ -723,7 +777,20 @@ class SoundLightAPI:
                 return  # someone connected while we waited for the lock
 
             ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
-            headers = {"Authorization": f"Bearer {self._access_token}"}
+            # The WebSocket handshake uses the `token` auth scheme, NOT `Bearer`
+            # — verified in the app (WebSocketClient sends `Authorization: token
+            # <token>`). The REST endpoints (login/babies/refresh) keep `Bearer`.
+            # The gateway has tolerated `Bearer` here historically, but matching
+            # the app removes a latent total-outage risk if it ever tightens.
+            headers = {"Authorization": f"token {self._access_token}"}
+
+            # Fresh connection: the device isn't attached until its backend frame
+            # says Connected, and the app uses a new sessionId per connection.
+            # Clear the authoritative-detach latch so the Response-inference can
+            # bootstrap again if this connection never sees a backend frame.
+            self._mark_detached(baby_uid)
+            self._backend_detached.pop(baby_uid, None)
+            self._session_ids.pop(baby_uid, None)
 
             try:
                 # TLS context only for wss:// (plaintext ws:// is used by tests
@@ -757,9 +824,12 @@ class SoundLightAPI:
                     lambda _t, key=connection_key: self._handler_tasks.pop(key, None)
                 )
 
-                # Send immediate ping to get current device state
-                await self.send_ping_for_state(baby_uid)
-
+                # Don't send anything yet. The app sends nothing on open and
+                # waits for the backend Connected frame first; firing GetSettings
+                # into a still-Disconnected relay is what stalled. The coordinator
+                # poll (send_ping_for_state) and send_saved_sounds_request both
+                # wait for attachment before sending, so state loads as soon as
+                # the device attaches.
                 _LOGGER.debug("Connected to Sound + Light device: %s", speaker_uid)
 
             except Exception as e:
@@ -819,7 +889,90 @@ class SoundLightAPI:
         self._message_id += 1
         return self._message_id
 
-    def build_control_message(self, **kwargs) -> tuple[bytes, int]:
+    def _session_id(self, baby_uid: str) -> str:
+        """Return this connection's random sessionId, creating one if needed."""
+        sid = self._session_ids.get(baby_uid)
+        if sid is None:
+            # ~50 random bits as an opaque token (the app uses BigInteger(50,
+            # SecureRandom).toString(32); the device treats this as opaque and
+            # tolerates a null sessionId, so the exact radix doesn't matter).
+            sid = format(secrets.randbits(50), "x")
+            self._session_ids[baby_uid] = sid
+        return sid
+
+    def _attached_event(self, baby_uid: str) -> asyncio.Event:
+        """The per-device 'backend Connected' event (created lazily)."""
+        return self._attached_events.setdefault(baby_uid, asyncio.Event())
+
+    def is_device_attached(self, baby_uid: str) -> bool:
+        """True once the relay reported the physical device as attached.
+
+        Gates entity availability and command sends: a socket can be open while
+        the device behind the relay is still Disconnected, in which case sending
+        only produces latency. Set from the Backend frame's device.status, and
+        also inferred from any genuine Response/settings traffic (if the device
+        is answering, it's clearly attached) so a missed/renamed backend frame
+        can't wedge us permanently.
+        """
+        return self._device_attached.get(baby_uid, False)
+
+    def _mark_attached(self, baby_uid: str) -> None:
+        """Latch the device as attached and wake anyone waiting to send."""
+        self._device_attached[baby_uid] = True
+        self._attached_event(baby_uid).set()
+
+    def _mark_detached(self, baby_uid: str) -> None:
+        """Clear attachment (socket dropped or backend reported Disconnected)."""
+        self._device_attached[baby_uid] = False
+        event = self._attached_events.get(baby_uid)
+        if event is not None:
+            event.clear()
+
+    async def wait_for_device_attached(
+        self, baby_uid: str, timeout: float | None = None
+    ) -> bool:
+        """Wait up to ``timeout`` for the backend Connected frame.
+
+        Returns True once attached, False on timeout. Callers decide what to do
+        on False (commands send best-effort; the poll just warns). ``timeout``
+        defaults to ``DEVICE_ATTACH_TIMEOUT`` read at call time (so tests can
+        monkeypatch the module constant).
+        """
+        if timeout is None:
+            timeout = DEVICE_ATTACH_TIMEOUT
+        if self.is_device_attached(baby_uid):
+            return True
+        try:
+            await asyncio.wait_for(self._attached_event(baby_uid).wait(), timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    def _resolve_pending_response(self, baby_uid: str, response) -> None:
+        """Resolve the awaiting send (if any) for an inbound Response by requestId.
+
+        Mirrors the app's correlation: a Response carries the requestId of the
+        Request it answers; we hand its statusCode to the matching send so it
+        can confirm success (2xx) or surface a rejection. Unmatched Responses
+        (e.g. our fire-and-forget GetSettings poll) simply have no waiter.
+        """
+        if not response.HasField("requestId"):
+            return
+        request_id = response.requestId
+        status_code = response.statusCode if response.HasField("statusCode") else 200
+        future = self._pending_responses.get(baby_uid, {}).get(request_id)
+        if future is not None and not future.done():
+            future.set_result(status_code)
+
+    def _fail_pending_responses(self, baby_uid: str, error: Exception) -> None:
+        """Fail all in-flight sends for a device (socket dropped before ack)."""
+        for future in self._pending_responses.pop(baby_uid, {}).values():
+            if not future.done():
+                future.set_exception(error)
+
+    def build_control_message(
+        self, session_id: str | None = None, **kwargs
+    ) -> tuple[bytes, int]:
         """Build a serialized control Message from the given fields.
 
         Returns ``(message_bytes, message_id)``. Every provided field is packed
@@ -834,6 +987,8 @@ class SoundLightAPI:
 
         message_id = self._next_message_id()
         request.id = message_id
+        if session_id is not None:
+            request.sessionId = session_id
 
         # Set control parameters
         if "is_on" in kwargs:
@@ -845,9 +1000,16 @@ class SoundLightAPI:
         if "color" in kwargs:
             color_info = kwargs["color"]
             color_data = Color()
-            color_data.noColor = color_info.get("noColor", False)
-            color_data.hue = float(color_info.get("hue", 0.0))
-            color_data.saturation = float(color_info.get("saturation", 0.0))
+            # Only set the color sub-fields actually provided. A light-off
+            # command sends a bare {noColor: true} and must NOT carry hue=0/
+            # saturation=0, which would clobber the device's stored color (the
+            # last-color restore relies on it surviving an off/on cycle).
+            if "noColor" in color_info:
+                color_data.noColor = color_info["noColor"]
+            if "hue" in color_info:
+                color_data.hue = float(color_info["hue"])
+            if "saturation" in color_info:
+                color_data.saturation = float(color_info["saturation"])
             # Note: brightness is sent separately in Settings.brightness, not in Color
             settings.color.CopyFrom(color_data)
 
@@ -872,7 +1034,16 @@ class SoundLightAPI:
         return message.SerializeToString(), message_id
 
     async def send_control_command(self, baby_uid: str, **kwargs) -> None:
-        """Send control command using pure protobuf."""
+        """Send one control command and await the device's ack, like the app.
+
+        Mirrors the official app's transaction model (SocketRequestManager):
+        one Request in flight per device, await the Response whose ``requestId``
+        matches (10s), and only then return. A non-2xx status or a timeout
+        raises so the coordinator rolls back the optimistic UI instead of
+        leaving a state the device never accepted. Replaces the old
+        fire-and-forget send, whose undrained responses degraded the device's
+        transaction state until it wedged (needed a power cycle).
+        """
         # Ensure we have a healthy WebSocket connection. Raise (rather than
         # silently return) so the caller's failure surfaces instead of the
         # command appearing to succeed while nothing reached the device, and
@@ -890,23 +1061,98 @@ class SoundLightAPI:
             )
             return
 
-        connection_key = f"{baby_uid}_speaker"
-        websocket = self._websockets.get(connection_key)
-
-        try:
-            message_bytes, message_id = self.build_control_message(**kwargs)
-            await websocket.send(message_bytes)
-
-            _LOGGER.debug(
-                "Sent protobuf control for %s (id=%s): %s (hex: %s)",
+        # Readiness gate: the relay can be up while the physical device is still
+        # Disconnected behind it, in which case a command just stalls. Wait for
+        # the backend Connected frame, but fall back to a best-effort send if it
+        # never arrives — a missed/renamed backend frame must not brick control
+        # (the ack-await below still surfaces a genuine failure).
+        if not await self.wait_for_device_attached(baby_uid):
+            _LOGGER.warning(
+                "Device %s not confirmed attached (no backend Connected frame); "
+                "sending command best-effort",
                 baby_uid,
-                message_id,
-                kwargs,
-                message_bytes.hex(),
             )
 
-        except Exception as e:
-            _LOGGER.error("Failed to send control command: %s", e)
+        message_bytes, message_id = self.build_control_message(
+            session_id=self._session_id(baby_uid), **kwargs
+        )
+        _LOGGER.debug(
+            "Sending protobuf control for %s (id=%s): %s (hex: %s)",
+            baby_uid,
+            message_id,
+            kwargs,
+            message_bytes.hex(),
+        )
+        # One in flight per device, await the ack; raises on timeout/non-2xx.
+        await self._transact(baby_uid, message_bytes, message_id, require_ack=True)
+        _LOGGER.debug("Control command id=%s on %s acked", message_id, baby_uid)
+
+    async def _transact(
+        self,
+        baby_uid: str,
+        message_bytes: bytes,
+        message_id: int,
+        *,
+        require_ack: bool,
+        timeout: float | None = None,
+    ) -> int | None:
+        """Send one request under the per-device lock and await its Response.
+
+        Enforces "one request in flight per device" (the app's transaction
+        model): the lock is held until the matching Response (by requestId)
+        arrives or the ack times out, so no two requests — control OR poll —
+        ever overlap unacked on the wire. Overlapping unacked transactions are
+        precisely what degrade the device until it wedges.
+
+        ``require_ack=True`` (control): a timeout or non-2xx status raises
+        ConnectionError so the coordinator rolls back the optimistic UI.
+        ``require_ack=False`` (poll / saved-sounds): still serialized and
+        drained, but a timeout/non-2xx is swallowed (best-effort) — the
+        response, if any, is parsed into device_state by the handler regardless.
+        Returns the status code, or None on a best-effort timeout/closed socket.
+        """
+        if timeout is None:
+            timeout = COMMAND_ACK_TIMEOUT
+        connection_key = f"{baby_uid}_speaker"
+        lock = self._send_locks.setdefault(baby_uid, asyncio.Lock())
+        async with lock:
+            websocket = self._websockets.get(connection_key)
+            if websocket is None or self._is_websocket_closed(websocket):
+                self._schedule_reconnect(baby_uid)
+                if require_ack:
+                    raise ConnectionError(
+                        f"WebSocket closed before sending request for {baby_uid}"
+                    )
+                return None
+
+            future: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._pending_responses.setdefault(baby_uid, {})[message_id] = future
+            try:
+                await websocket.send(message_bytes)
+                try:
+                    status_code = await asyncio.wait_for(future, timeout=timeout)
+                except asyncio.TimeoutError as e:
+                    self._schedule_reconnect(baby_uid)
+                    if require_ack:
+                        raise ConnectionError(
+                            f"No ack for request id={message_id} on {baby_uid} "
+                            f"within {timeout}s"
+                        ) from e
+                    _LOGGER.debug(
+                        "No ack for state request id=%s on %s (best-effort)",
+                        message_id,
+                        baby_uid,
+                    )
+                    return None
+
+                if require_ack and not (200 <= status_code < 300):
+                    raise ConnectionError(
+                        f"Device rejected request id={message_id} on {baby_uid}: "
+                        f"status {status_code}"
+                    )
+                return status_code
+            finally:
+                self._pending_responses.get(baby_uid, {}).pop(message_id, None)
 
     async def send_ping_for_state(self, baby_uid: str) -> None:
         """Send comprehensive status request to get device state and sensor data."""
@@ -920,8 +1166,14 @@ class SoundLightAPI:
             self._schedule_reconnect(baby_uid)
             return
 
-        connection_key = f"{baby_uid}_speaker"
-        websocket = self._websockets.get(connection_key)
+        # Wait (best-effort) for the device to attach before polling state — a
+        # GetSettings into a still-Disconnected relay just stalls. Don't raise;
+        # if it never attaches we let the reconnect/poll cycle retry.
+        if not await self.wait_for_device_attached(baby_uid):
+            _LOGGER.debug(
+                "Skipping state ping for %s — device not attached yet", baby_uid
+            )
+            return
 
         try:
             if not PROTOBUF_AVAILABLE:
@@ -935,21 +1187,23 @@ class SoundLightAPI:
             get_settings.temperature = True
             get_settings.humidity = True
 
-            # Create Request with GetSettings in field 5
+            # Create Request with GetSettings in field 5. A unique id (not a
+            # hardcoded 1) keeps it from colliding with control-command ids in
+            # the response-correlation map.
             request = Request()
-            request.id = 1
-            request.sessionId = (
-                "generated_session_id"  # Will be replaced by actual session
-            )
+            message_id = self._next_message_id()
+            request.id = message_id
+            request.sessionId = self._session_id(baby_uid)
             request.getSettings.CopyFrom(get_settings)
 
             # Create main Message wrapper
             message = Message()
             message.request.CopyFrom(request)
-
-            # Serialize and send
             message_bytes = message.SerializeToString()
-            await websocket.send(message_bytes)
+
+            # Best-effort, but routed through the same one-in-flight transaction
+            # as control so a poll can't overlap a command unacked on the wire.
+            await self._transact(baby_uid, message_bytes, message_id, require_ack=False)
 
             _LOGGER.debug(
                 "Sent GetSettings request (working pattern) for %s (hex: %s)",
@@ -959,6 +1213,65 @@ class SoundLightAPI:
 
         except Exception as e:
             _LOGGER.error("Failed to send status request: %s", e)
+
+    async def _send_query(self, baby_uid: str, mutate_request) -> None:
+        """Build a diagnostics Request via ``mutate_request`` and send best-effort.
+
+        Battery/wifi/firmware ride their own query request types (GetStatus /
+        Network / Firmware), not the GetSettings poll, but go through the same
+        one-in-flight ``_transact`` so they can't overlap a command on the wire.
+        Best-effort: a device that doesn't answer just leaves those sensors
+        unknown, and the short DIAGNOSTICS_ACK_TIMEOUT bounds the lock hold.
+        """
+        if not await self.ensure_websocket_connection(baby_uid):
+            self._schedule_reconnect(baby_uid)
+            return
+        if not await self.wait_for_device_attached(baby_uid, timeout=2.0):
+            return
+        if not PROTOBUF_AVAILABLE:
+            return
+
+        request = Request()
+        message_id = self._next_message_id()
+        request.id = message_id
+        request.sessionId = self._session_id(baby_uid)
+        mutate_request(request)
+        message = Message()
+        message.request.CopyFrom(request)
+        try:
+            await self._transact(
+                baby_uid,
+                message.SerializeToString(),
+                message_id,
+                require_ack=False,
+                timeout=DIAGNOSTICS_ACK_TIMEOUT,
+            )
+        except Exception as e:
+            _LOGGER.debug("Diagnostics query failed for %s: %s", baby_uid, e)
+
+    async def send_status_request(self, baby_uid: str) -> None:
+        """Poll battery (+ temp/humidity) via GetStatus(all=true)."""
+
+        def _mutate(request) -> None:
+            request.getStatus.all = True
+
+        await self._send_query(baby_uid, _mutate)
+
+    async def send_network_request(self, baby_uid: str) -> None:
+        """Poll the current WiFi access point via Network{getStatus}."""
+
+        def _mutate(request) -> None:
+            request.network.getStatus.SetInParent()  # present-but-empty marker
+
+        await self._send_query(baby_uid, _mutate)
+
+    async def send_firmware_request(self, baby_uid: str) -> None:
+        """Fetch the firmware version via Firmware{info}."""
+
+        def _mutate(request) -> None:
+            request.firmware.info.SetInParent()  # present-but-empty marker
+
+        await self._send_query(baby_uid, _mutate)
 
     def _is_websocket_closed(self, websocket) -> bool:
         """Check if websocket is closed, handling different websocket library versions."""
@@ -1051,9 +1364,41 @@ class SoundLightAPI:
             if self._websockets.get(connection_key) is websocket:
                 del self._websockets[connection_key]
                 _LOGGER.debug("Cleaned up WebSocket reference for %s", connection_key)
+                baby_uid = connection_key.rsplit("_speaker", 1)[0]
+                # Socket gone: device is no longer attached, and any command
+                # awaiting an ack will never get one — fail it now so the caller
+                # rolls back instead of waiting out the 10s timeout.
+                self._mark_detached(baby_uid)
+                self._fail_pending_responses(
+                    baby_uid, ConnectionError("WebSocket closed before ack")
+                )
                 # Proactively reconnect instead of waiting for the next lazy use.
                 if not self._closing:
-                    self._schedule_reconnect(connection_key.rsplit("_speaker", 1)[0])
+                    self._schedule_reconnect(baby_uid)
+
+    @staticmethod
+    def _parse_battery(device_state: dict[str, Any], battery) -> None:
+        """Parse a Status.Battery into device_state (percent + charging)."""
+        if battery.HasField("soc"):
+            device_state["battery_percent"] = _SOC_TO_PERCENT.get(battery.soc)
+            _LOGGER.debug("Battery soc bucket=%s", battery.soc)
+        if battery.HasField("isCharging"):
+            device_state["battery_charging"] = battery.isCharging
+
+    @staticmethod
+    def _parse_network(device_state: dict[str, Any], network_status) -> None:
+        """Parse a NetworkStatus.currentAp into device_state (wifi diagnostics)."""
+        if not network_status.HasField("currentAp"):
+            return
+        ap = network_status.currentAp
+        if ap.HasField("rssi"):
+            device_state["wifi_rssi"] = ap.rssi
+        if ap.HasField("ssid"):
+            device_state["wifi_ssid"] = ap.ssid
+        if ap.HasField("bssid"):
+            device_state["wifi_bssid"] = ap.bssid
+        if ap.HasField("primaryChannel"):
+            device_state["wifi_channel"] = ap.primaryChannel
 
     async def _process_protobuf_message(
         self, connection_key: str, raw_message: bytes
@@ -1084,6 +1429,15 @@ class SoundLightAPI:
                     response_fields = [field.name for field, _ in response.ListFields()]
                     _LOGGER.debug("Response fields: %s", response_fields)
 
+                    # A Response means the relay round-tripped to the physical
+                    # device, so infer attached even if we missed the backend
+                    # frame — UNLESS a backend frame has explicitly said
+                    # Disconnected (that frame wins; don't let a stale Response
+                    # re-open the gate). Hand the ack to any awaiting command.
+                    if not self._backend_detached.get(baby_uid, False):
+                        self._mark_attached(baby_uid)
+                    self._resolve_pending_response(baby_uid, response)
+
                     # Handle status response for sensors - use APK field names
                     if response.HasField("status"):
                         status = response.status
@@ -1100,6 +1454,24 @@ class SoundLightAPI:
                         if status.HasField("humidity"):
                             device_state["humidity"] = status.humidity
                             _LOGGER.debug("Humidity: %.1f%%", status.humidity)
+                        # Battery (from GetStatus) — coarse 5-bucket SoC + charging.
+                        if status.HasField("battery"):
+                            self._parse_battery(device_state, status.battery)
+
+                    # WiFi readback (from Network{getStatus}).
+                    if response.HasField("networkStatus"):
+                        self._parse_network(device_state, response.networkStatus)
+
+                    # Firmware version readback (from Firmware{info}).
+                    if response.HasField("firmware") and response.firmware.HasField(
+                        "version"
+                    ):
+                        device_state["firmware_version"] = response.firmware.version
+                        _LOGGER.debug(
+                            "Firmware version for %s: %s",
+                            baby_uid,
+                            response.firmware.version,
+                        )
 
                     # Handle settings response (device state) - use APK field names
                     if response.HasField("settings"):
@@ -1282,10 +1654,30 @@ class SoundLightAPI:
 
                     return  # Successfully parsed as Message request
 
-                # Handle other message types (backend, etc.)
+                # Backend readiness frame. The relay reports whether the physical
+                # device is attached behind it; gate availability + sends on it.
                 elif message_response.HasField("backend"):
-                    _LOGGER.debug("Received backend message for %s", baby_uid)
-                    return  # Backend messages don't need processing
+                    backend = message_response.backend
+                    status = None
+                    if backend.HasField("device") and backend.device.HasField("status"):
+                        status = backend.device.status
+                    if status == _BACKEND_STATUS_CONNECTED:
+                        _LOGGER.debug(
+                            "Backend: device %s attached (Connected)", baby_uid
+                        )
+                        self._backend_detached[baby_uid] = False
+                        self._mark_attached(baby_uid)
+                    else:
+                        _LOGGER.debug(
+                            "Backend: device %s not attached (status=%s)",
+                            baby_uid,
+                            status,
+                        )
+                        # Authoritative detach: suppress the Response-inference
+                        # until a Connected frame clears it.
+                        self._backend_detached[baby_uid] = True
+                        self._mark_detached(baby_uid)
+                    return
 
                 # If message parsed as Message but has unknown structure, fall through to legacy parsing
 
@@ -1375,8 +1767,18 @@ class SoundLightAPI:
     async def send_saved_sounds_request(self, baby_uid: str) -> None:
         """Request available sound list from device."""
         connection_key = f"{baby_uid}_speaker"
-        websocket = self._websockets.get(connection_key)
-        if not websocket:
+        if connection_key not in self._websockets:
+            return
+
+        # Best-effort with a SHORT attach wait: this is non-critical (the
+        # all=True state ping also returns the sound list), so don't let it
+        # stack a full DEVICE_ATTACH_TIMEOUT on top of the ping's wait and risk
+        # blowing the coordinator's first-refresh timeout on multi-device setups.
+        if not await self.wait_for_device_attached(baby_uid, timeout=2.0):
+            _LOGGER.debug(
+                "Skipping saved-sounds request for %s — device not attached yet",
+                baby_uid,
+            )
             return
 
         try:
@@ -1388,17 +1790,20 @@ class SoundLightAPI:
             get_settings = GetSettings()
             get_settings.savedSounds = True  # Request available sounds
 
+            # Unique id (not a hardcoded 3, which collided with control-command
+            # ids) so the response map stays unambiguous.
             request = Request()
-            request.id = 3  # Different ID for sound list request
-            request.sessionId = "sounds_session_id"
+            message_id = self._next_message_id()
+            request.id = message_id
+            request.sessionId = self._session_id(baby_uid)
             request.getSettings.CopyFrom(get_settings)
 
             message = Message()
             message.request.CopyFrom(request)
-
-            # Serialize and send
             message_bytes = message.SerializeToString()
-            await websocket.send(message_bytes)
+
+            # Best-effort, but one-in-flight via the same transaction path.
+            await self._transact(baby_uid, message_bytes, message_id, require_ack=False)
 
             _LOGGER.debug(
                 "Sent saved sounds request for %s (hex: %s)",
@@ -1420,6 +1825,15 @@ class SoundLightAPI:
         for task in self._handler_tasks.values():
             task.cancel()
         self._handler_tasks.clear()
+
+        # Fail any in-flight command waiters and drop readiness/session state so
+        # a send racing the shutdown returns instead of hanging on its ack.
+        for baby_uid in list(self._pending_responses):
+            self._fail_pending_responses(baby_uid, ConnectionError("API shutting down"))
+        self._device_attached.clear()
+        self._attached_events.clear()
+        self._backend_detached.clear()
+        self._session_ids.clear()
 
         # Close all websockets
         websocket_close_tasks = []

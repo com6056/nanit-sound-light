@@ -58,16 +58,19 @@ class NanitSoundLightEntity(CoordinatorEntity):
     def available(self) -> bool:
         """Return True only when the device is actually reachable.
 
-        Gated on the live websocket (not just cached coordinator data) so that
-        on a cloud/socket outage the entities go unavailable instead of showing
-        the last-known state as if it were live. A brief reconnect blip can flip
-        this for a second or two, which is the honest signal for a baby device.
+        Gated on the live websocket AND the backend readiness frame (not just
+        cached coordinator data) so that on a cloud/socket outage — or while the
+        relay is up but the physical device is still detached behind it — the
+        entities go unavailable instead of showing the last-known state as if it
+        were live. A brief reconnect blip can flip this for a second or two,
+        which is the honest signal for a baby device.
         """
         return (
             self.coordinator.last_update_success
             and self.coordinator.data is not None
             and self._device_uid in self.coordinator.data.get("devices", {})
             and self.coordinator.api.is_websocket_connected(self._device_uid)
+            and self.coordinator.api.is_device_attached(self._device_uid)
         )
 
     def _log_error(self, action: str, error: Exception) -> None:

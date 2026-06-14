@@ -7,8 +7,8 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AuthenticationError, MfaRequiredError, SoundLightAPI
@@ -44,7 +44,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -110,7 +110,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_mfa(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle MFA verification step."""
         errors: dict[str, str] = {}
 
@@ -171,7 +171,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"email": self._email},
         )
 
-    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Start reauth: re-prompt for the password (the email is known)."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
@@ -183,7 +183,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Collect the password and re-authenticate the existing account."""
         errors: dict[str, str] = {}
 
@@ -212,7 +212,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_mfa(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Complete MFA during reauth."""
         errors: dict[str, str] = {}
 
@@ -240,7 +240,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"email": self._email or ""},
         )
 
-    async def _reauth_finish(self, api: SoundLightAPI) -> FlowResult:
+    async def _reauth_finish(self, api: SoundLightAPI) -> ConfigFlowResult:
         """Persist the refreshed token, reload the entry, and finish reauth."""
         new_data = dict(self._reauth_entry.data)
         new_data[CONF_EMAIL] = self._email

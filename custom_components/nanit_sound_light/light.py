@@ -171,7 +171,27 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 control_params["color"] = color_dict
                 # Save this as last color for future restoration
                 self.coordinator.save_last_color(self._device_uid, color_dict)
-            # Remove the default warm white fallback - if no color info, don't set color
+            else:
+                # No stored color (e.g. after a HA restart cleared the in-memory
+                # _last_colors) and no explicit color from the call. Re-enable
+                # color using whatever hue/saturation the device still holds, so
+                # turning the light "on" actually clears no_color instead of
+                # being a silent no-op (is_on requires not no_color). The device
+                # retains hue/sat across an off/on cycle because we never zero them.
+                color_dict = {
+                    "noColor": False,
+                    "hue": device_data.get("hue", 0.0),
+                    "saturation": device_data.get("saturation", 0.0),
+                    "brightness": control_params.get("brightness", 1.0),
+                }
+                _LOGGER.debug(
+                    "No stored color for %s; re-enabling with device hue=%.3f sat=%.3f",
+                    self._device_uid,
+                    color_dict["hue"],
+                    color_dict["saturation"],
+                )
+                control_params["color"] = color_dict
+                self.coordinator.save_last_color(self._device_uid, color_dict)
         elif "hs_color" in kwargs:
             # Device is on and user set explicit color - check if it's different from current
             current_hue = device_data.get("hue", 0.0) * 360.0  # Convert to degrees
@@ -210,16 +230,18 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
             self._log_error("turn on light", e)
 
     async def async_turn_off(self, **_: Any) -> None:
-        """Turn off the light using noColor instead of brightness=0."""
+        """Turn off just the light (color), leaving the device on so sound keeps playing.
+
+        The device has a single power primitive (isOn) that the *switch* owns;
+        the light is disabled independently via color.noColor. We send a bare
+        ``color{noColor: true}`` — NOT the old ``noColor + brightness: 1.0``,
+        whose brightness:1.0 was ambiguous and left the stored color untouched
+        only by luck. build_control_message now omits hue/saturation when not
+        given, so the device's last color survives the off/on cycle.
+        """
         _LOGGER.debug("Light turn OFF requested for %s", self._device_uid)
         try:
-            # Use noColor=True to turn off light (better than brightness=0)
-            color_dict = {
-                "noColor": True,
-                "hue": 0.0,
-                "saturation": 0.0,
-                "brightness": 1.0,  # Keep brightness high, noColor disables it
-            }
+            color_dict = {"noColor": True}
             _LOGGER.debug("Sending light OFF command for %s", self._device_uid)
             await self.coordinator.async_send_control_command(
                 self._device_uid, color=color_dict

@@ -68,3 +68,26 @@ def test_no_sound_sets_no_sound_flag(nsl, api):
     sound = _decode(nsl, raw).request.settings.sound
     assert sound.noSound is True
     assert sound.track == ""
+
+
+def test_light_off_sends_bare_no_color(nsl, api):
+    """Light OFF is a clean color{noColor:true} — no stray hue/sat/brightness.
+
+    The old encoding sent noColor + hue:0 + sat:0 + brightness:1.0, which both
+    muddied the on/off mechanism and clobbered the device's stored color. We now
+    omit any color sub-field that wasn't provided so the last color survives an
+    off/on cycle.
+    """
+    raw, _ = api.build_control_message(color={"noColor": True})
+    settings = _decode(nsl, raw).request.settings
+    assert settings.color.noColor is True
+    assert not settings.color.HasField("hue")
+    assert not settings.color.HasField("saturation")
+    assert not settings.HasField("brightness")
+    # And it must NOT touch the power primitive (sound keeps playing).
+    assert not settings.HasField("isOn")
+
+
+def test_session_id_is_stamped_when_provided(nsl, api):
+    raw, _ = api.build_control_message(session_id="abc123", is_on=True)
+    assert _decode(nsl, raw).request.sessionId == "abc123"

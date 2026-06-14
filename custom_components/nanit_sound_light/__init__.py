@@ -15,7 +15,8 @@ from .coordinator import NanitSoundLightCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
-    Platform.SENSOR,  # Temperature, humidity sensors
+    Platform.SENSOR,  # Temperature, humidity, battery %, WiFi, firmware
+    Platform.BINARY_SENSOR,  # Battery charging
     Platform.LIGHT,  # Brightness and color control
     Platform.NUMBER,  # Volume control
     Platform.SWITCH,  # Power control
