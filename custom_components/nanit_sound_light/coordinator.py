@@ -157,8 +157,8 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                 # Connect to all devices
                 for device in self._devices:
                     await self.api.connect_device(device)
-                    _LOGGER.info(
-                        "🔗 Connected to device: %s (%s)",
+                    _LOGGER.debug(
+                        "Connected to device: %s (%s)",
                         device["speaker_name"],
                         device["speaker_uid"][:8] + "...",
                     )
@@ -267,7 +267,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         schedule a single combined flush.
         """
         _LOGGER.debug(
-            "🎮 Queuing command for %s: %s",
+            "Queuing command for %s: %s",
             (
                 self._devices[0]["speaker_name"]
                 if self._devices
@@ -402,7 +402,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         except Exception as e:
             error_type = type(e).__name__
             _LOGGER.error(
-                "❌ Control command failed for %s (%s): %s — rolling back",
+                "Control command failed for %s (%s): %s — rolling back",
                 baby_uid[:8] + "...",
                 error_type,
                 e,

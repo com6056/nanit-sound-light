@@ -554,7 +554,7 @@ class SoundLightAPI:
             if time_since_failure < 1800:  # 30 minutes
                 remaining_minutes = (1800 - time_since_failure) / 60
                 _LOGGER.warning(
-                    "🔒 Authentication retry limit reached (%d attempts). "
+                    "Authentication retry limit reached (%d attempts). "
                     "Waiting %.1f more minutes to prevent MFA spam and protect your account",
                     self._auth_retry_count,
                     remaining_minutes,
@@ -563,7 +563,7 @@ class SoundLightAPI:
             else:
                 # Reset retry count after waiting period
                 _LOGGER.info(
-                    "🔓 Authentication retry wait period expired - resuming normal authentication"
+                    "Authentication retry wait period expired - resuming normal authentication"
                 )
                 self._auth_retry_count = 0
                 self._last_auth_failure = None
@@ -596,7 +596,7 @@ class SoundLightAPI:
         )
 
         _LOGGER.warning(
-            "⚠️  Authentication attempt %d/%d failed. Next retry allowed in %s",
+            " Authentication attempt %d/%d failed. Next retry allowed in %s",
             self._auth_retry_count,
             self._max_retry_count,
             next_retry_info,
@@ -693,7 +693,7 @@ class SoundLightAPI:
                     "speaker_name": speaker_data["speaker"]["name"],
                 }
                 sound_light_devices.append(device_info)
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Found Sound + Light device: %s (%s)",
                     device_info["speaker_name"],
                     device_info["speaker_uid"],
@@ -754,7 +754,7 @@ class SoundLightAPI:
                 # Send immediate ping to get current device state
                 await self.send_ping_for_state(baby_uid)
 
-                _LOGGER.info("Connected to Sound + Light device: %s", speaker_uid)
+                _LOGGER.debug("Connected to Sound + Light device: %s", speaker_uid)
 
             except Exception as e:
                 _LOGGER.error(
@@ -797,7 +797,7 @@ class SoundLightAPI:
             retries += 1
 
         if self.is_websocket_connected(baby_uid):
-            _LOGGER.info("Reconnected to %s after %d attempt(s)", baby_uid, retries)
+            _LOGGER.debug("Reconnected to %s after %d attempt(s)", baby_uid, retries)
 
     def _next_message_id(self) -> int:
         """Return a unique, monotonically increasing control-message id.
@@ -1076,14 +1076,14 @@ class SoundLightAPI:
                 if message_response.HasField("response"):
                     response = message_response.response
                     response_fields = [field.name for field, _ in response.ListFields()]
-                    _LOGGER.debug("📋 Response fields: %s", response_fields)
+                    _LOGGER.debug("Response fields: %s", response_fields)
 
                     # Handle status response for sensors - use APK field names
                     if response.HasField("status"):
                         status = response.status
                         _LOGGER.debug("Found Status field in response")
                         _LOGGER.debug(
-                            "📋 Status fields: %s",
+                            "Status fields: %s",
                             [field.name for field, _ in status.ListFields()],
                         )
 
@@ -1189,7 +1189,7 @@ class SoundLightAPI:
                         "Processing Message request (external change) for %s", baby_uid
                     )
                     _LOGGER.debug(
-                        "📋 Request fields: %s",
+                        "Request fields: %s",
                         [field.name for field, _ in request.ListFields()],
                     )
 
@@ -1198,7 +1198,7 @@ class SoundLightAPI:
                         status = request.status
                         _LOGGER.debug("Found Status field in external request")
                         _LOGGER.debug(
-                            "📋 Status fields: %s",
+                            "Status fields: %s",
                             [field.name for field, _ in status.ListFields()],
                         )
 

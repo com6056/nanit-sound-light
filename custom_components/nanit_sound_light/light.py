@@ -64,7 +64,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
 
         # Add comprehensive logging for debugging
         _LOGGER.debug(
-            "💡 Light state for %s: device_power=%s, brightness=%.2f, no_color=%s → light_on=%s",
+            "Light state for %s: device_power=%s, brightness=%.2f, no_color=%s → light_on=%s",
             self._device_uid,
             device_power_on,
             device_data.get("brightness", 0.0),
@@ -206,7 +206,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 self._device_uid, **control_params
             )
         except Exception as e:
-            _LOGGER.error("❌ Failed to turn on light for %s: %s", self._device_uid, e)
+            _LOGGER.error("Failed to turn on light for %s: %s", self._device_uid, e)
             self._log_error("turn on light", e)
 
     async def async_turn_off(self, **_: Any) -> None:
@@ -225,5 +225,5 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 self._device_uid, color=color_dict
             )
         except Exception as e:
-            _LOGGER.error("❌ Failed to turn off light for %s: %s", self._device_uid, e)
+            _LOGGER.error("Failed to turn off light for %s: %s", self._device_uid, e)
             self._log_error("turn off light", e)

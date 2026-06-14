@@ -85,22 +85,25 @@ generated protobuf module and would double-register its descriptors otherwise.
 CI (`.github/workflows/ci.yml`) runs ruff + prettier + protobuf-drift check +
 hassfest + HACS validation + both pytest jobs. Regenerate the protobuf with `ci.sh`.
 
-## Release-polish TODO (before a public release)
+## Release-polish status
 
-Known gaps from a pre-release audit, not yet done:
+Addressed in the pre-release pass:
 
-- Entities should go **unavailable** on socket/cloud outage instead of showing
-  stale state as live (gate `available` on `last_update_success` +
-  `is_websocket_connected`; centralize it in the base entity).
-- Setup should raise `ConfigEntryNotReady` / `ConfigEntryAuthFailed` (not return
-  `False`), and wire a real **reauth** (password re-prompt) for a rejected refresh
-  token — current recovery is delete + re-add.
-- This is `cloud_push`: drop the 10s busy-wait per-device polling loop and lean on
-  the push socket.
-- Pin `protobuf` / `websockets` requirements to ranges compatible with HA core;
-  fail setup loudly on a protobuf import error instead of degrading to no-ops.
-- HACS hygiene: widen `hacs.json` `country`, add a `config.abort` block to
-  `strings.json`, demote info-spam logs, drop emoji from logs.
-- Add a coordinator-level test layer (`pytest-homeassistant-custom-component`) to
-  cover coalescing, pin-guard, rollback, and availability.
+- Entities go **unavailable** on socket/cloud outage (base entity gates on
+  `last_update_success` + `is_websocket_connected`).
+- Setup raises `ConfigEntryNotReady` / `ConfigEntryAuthFailed`; **reauth** is
+  self-contained (re-prompts for the password, handles MFA, rotates the token).
+- The `cloud_push` poll no longer busy-waits — it's a light backup over the push
+  socket.
+- `websockets>=13.0` (we use the modern `additional_headers` connect API); setup
+  fails loudly on a protobuf import error. `protobuf` is left broad on purpose so
+  it's satisfied by whatever HA ships rather than forcing a conflicting upgrade.
+- HACS hygiene: no `country` gate, `config.abort` strings, `integration_type`,
+  info-spam demoted, emoji removed from logs.
+- Coordinator/entity behavior is covered by the `tests_ha/` Home Assistant fixture
+  suite (coalescing, pin-guard, rollback, availability, auth/reauth, poll).
+
+Still nice-to-have before tagging a release: soften the README's hardcoded
+sound-count / "tested" claims, set a real `LICENSE` holder/year, and consider a
+manifest `quality_scale`.
 ```

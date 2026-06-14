@@ -7,5 +7,5 @@ pytest
 pytest-asyncio
 pytest-homeassistant-custom-component
 # The integration's own runtime requirements (manifest.json) — needed to import it.
-websockets>=10.0
+websockets>=13.0
 protobuf>=3.19.0

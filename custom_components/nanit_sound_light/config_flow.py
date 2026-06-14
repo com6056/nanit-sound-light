@@ -64,13 +64,11 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 devices = await api.get_sound_light_devices()
 
                 if not devices:
-                    _LOGGER.warning(
-                        "🔍 No Sound + Light devices found for user account"
-                    )
+                    _LOGGER.warning("No Sound + Light devices found for user account")
                     errors["base"] = "no_devices"
                 else:
                     _LOGGER.info(
-                        "🎉 Successfully found %d Sound + Light device(s)", len(devices)
+                        "Successfully found %d Sound + Light device(s)", len(devices)
                     )
                     # Stable per-account unique id so the same Nanit account can't
                     # be added twice and so reauth can find this entry.
@@ -93,15 +91,15 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except MfaRequiredError as mfa_error:
                 # Store MFA token and proceed to MFA step
                 self._mfa_token = mfa_error.mfa_token
-                _LOGGER.info("🔐 MFA verification required for user setup")
+                _LOGGER.info("MFA verification required for user setup")
                 return await self.async_step_mfa()
 
             except AuthenticationError as e:
-                _LOGGER.error("🚫 Authentication failed during setup: %s", e)
+                _LOGGER.error("Authentication failed during setup: %s", e)
                 errors["base"] = "invalid_auth"
             except Exception as e:
                 error_type = type(e).__name__
-                _LOGGER.error("💥 Unexpected setup error (%s): %s", error_type, e)
+                _LOGGER.error("Unexpected setup error (%s): %s", error_type, e)
                 errors["base"] = "cannot_connect"
 
         return self.async_show_form(
@@ -133,11 +131,11 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 devices = await api.get_sound_light_devices()
 
                 if not devices:
-                    _LOGGER.warning("🔍 No devices found after MFA verification")
+                    _LOGGER.warning("No devices found after MFA verification")
                     errors["base"] = "no_devices"
                 else:
                     _LOGGER.info(
-                        "🎉 MFA verification successful - found %d device(s)",
+                        "MFA verification successful - found %d device(s)",
                         len(devices),
                     )
                     # Stable per-account unique id so the same Nanit account can't
@@ -159,11 +157,11 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
 
             except AuthenticationError as e:
-                _LOGGER.error("🚫 MFA verification failed: %s", e)
+                _LOGGER.error("MFA verification failed: %s", e)
                 errors["base"] = "invalid_mfa"
             except Exception as e:
                 error_type = type(e).__name__
-                _LOGGER.error("💥 Unexpected error during MFA (%s): %s", error_type, e)
+                _LOGGER.error("Unexpected error during MFA (%s): %s", error_type, e)
                 errors["base"] = "cannot_connect"
 
         return self.async_show_form(

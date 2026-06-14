@@ -86,7 +86,7 @@ class NanitSoundLightSoundSelect(NanitSoundLightEntity, SelectEntity):
                 await self.coordinator.async_send_control_command(
                     self._device_uid, sound=option
                 )
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Selected sound '%s' for device %s", option, self._device_uid
                 )
             except Exception as e:

@@ -8,4 +8,4 @@ pytest
 pytest-asyncio
 protobuf>=3.19.0
 aiohttp
-websockets>=10.0
+websockets>=13.0

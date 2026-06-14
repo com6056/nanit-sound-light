@@ -8,6 +8,6 @@
   "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/com6056/nanit-sound-light/issues",
-  "requirements": ["websockets>=10.0", "protobuf>=3.19.0"],
+  "requirements": ["protobuf>=3.19.0", "websockets>=13.0"],
   "version": "1.0.0"
 }
