@@ -277,6 +277,40 @@ async def test_control_command_times_out_without_ack(nsl, monkeypatch):
     await server.stop()
 
 
+async def test_control_command_retries_on_timeout(nsl, monkeypatch):
+    """A command dropped on the first attempt (no ack) is re-sent and lands."""
+    monkeypatch.setattr(nsl.api, "COMMAND_ACK_TIMEOUT", 0.3)
+    server = await _serve(nsl, monkeypatch, send_backend=True)
+    seen = {"control": 0}
+    orig_ack = server._maybe_ack
+
+    async def flaky_ack(ws, raw):
+        msg = nsl.pb2.Message()
+        try:
+            msg.ParseFromString(raw)
+        except Exception:
+            return
+        if msg.HasField("request") and msg.request.HasField("settings"):
+            seen["control"] += 1
+            if seen["control"] == 1:
+                return  # drop the first control ack -> client times out + retries
+        await orig_ack(ws, raw)
+
+    server._maybe_ack = flaky_ack
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "test-token"
+    api._device_list = [DEVICE]
+
+    await api.connect_device(DEVICE)
+    await _wait_until(lambda: api.is_device_attached("baby123"))
+    # Succeeds despite the first attempt being dropped.
+    await api.send_control_command("baby123", is_on=True)
+    assert seen["control"] >= 2  # took at least one re-send
+
+    await api.close()
+    await server.stop()
+
+
 async def test_command_sends_best_effort_when_no_backend_frame(nsl, monkeypatch):
     """If the relay never sends a Connected frame, the gate falls back to a
     best-effort send (a missed/renamed frame must not brick control)."""

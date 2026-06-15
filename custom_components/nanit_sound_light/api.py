@@ -70,6 +70,13 @@ WS_CLOSE_TIMEOUT = 5  # seconds
 # wedges (needs a power cycle) — this is the fix for that.
 COMMAND_ACK_TIMEOUT = 10  # seconds to await a matching Response
 
+# The relay can be up while the physical device is idle/detached behind it, so a
+# one-shot command (e.g. a bedtime scene) can be silently dropped — sent, but no
+# ack. Re-send on ack-timeout to ride through that: these are idempotent settings
+# writes, so re-sending is safe, and a later attempt can land once the device is
+# responsive again. Only ack-TIMEOUTs retry; an explicit non-2xx rejection does not.
+COMMAND_MAX_ATTEMPTS = 3
+
 # device.status enum value from Backend.device (Disconnected=0, Connected=1).
 # The app derives "remote route is live" solely from this and sends nothing
 # until Connected; sending into a still-Disconnected relay is what caused our
@@ -134,6 +141,15 @@ except ImportError as e:
         pass
 
     PROTOBUF_AVAILABLE = False
+
+
+class CommandTimeout(ConnectionError):
+    """A control command was sent but not acked within COMMAND_ACK_TIMEOUT.
+
+    A ConnectionError subclass (so existing handlers still catch it), but
+    distinct so the sender can retry an ack-timeout without retrying an explicit
+    device rejection.
+    """
 
 
 class AuthenticationError(Exception):
@@ -1060,19 +1076,38 @@ class SoundLightAPI:
                 baby_uid,
             )
 
-        message_bytes, message_id = self.build_control_message(
-            session_id=self._session_id(baby_uid), **kwargs
-        )
-        _LOGGER.debug(
-            "Sending protobuf control for %s (id=%s): %s (hex: %s)",
-            baby_uid,
-            message_id,
-            kwargs,
-            message_bytes.hex(),
-        )
-        # One in flight per device, await the ack; raises on timeout/non-2xx.
-        await self._transact(baby_uid, message_bytes, message_id)
-        _LOGGER.debug("Control command id=%s on %s acked", message_id, baby_uid)
+        # One in flight per device, await the ack. Re-send (fresh id) on an
+        # ack-timeout so a command dropped while the device was momentarily
+        # idle/detached still lands on a later attempt; an explicit non-2xx
+        # rejection or a closed socket propagates immediately (no retry).
+        for attempt in range(1, COMMAND_MAX_ATTEMPTS + 1):
+            message_bytes, message_id = self.build_control_message(
+                session_id=self._session_id(baby_uid), **kwargs
+            )
+            _LOGGER.debug(
+                "Sending protobuf control for %s (id=%s, attempt %d/%d): %s (hex: %s)",
+                baby_uid,
+                message_id,
+                attempt,
+                COMMAND_MAX_ATTEMPTS,
+                kwargs,
+                message_bytes.hex(),
+            )
+            try:
+                await self._transact(baby_uid, message_bytes, message_id)
+                _LOGGER.debug("Control command id=%s on %s acked", message_id, baby_uid)
+                return
+            except CommandTimeout:
+                if attempt >= COMMAND_MAX_ATTEMPTS:
+                    raise
+                _LOGGER.warning(
+                    "No ack for %s command (attempt %d/%d) — re-sending",
+                    baby_uid,
+                    attempt,
+                    COMMAND_MAX_ATTEMPTS,
+                )
+                # Make sure the socket is live before the next attempt.
+                await self.ensure_websocket_connection(baby_uid)
 
     async def _transact(
         self, baby_uid: str, message_bytes: bytes, message_id: int
@@ -1106,7 +1141,7 @@ class SoundLightAPI:
                     )
                 except asyncio.TimeoutError as e:
                     self._schedule_reconnect(baby_uid)
-                    raise ConnectionError(
+                    raise CommandTimeout(
                         f"No ack for command id={message_id} on {baby_uid} "
                         f"within {COMMAND_ACK_TIMEOUT}s"
                     ) from e
