@@ -143,7 +143,7 @@ except ImportError as e:
     PROTOBUF_AVAILABLE = False
 
 
-class CommandTimeout(ConnectionError):
+class CommandTimeoutError(ConnectionError):
     """A control command was sent but not acked within COMMAND_ACK_TIMEOUT.
 
     A ConnectionError subclass (so existing handlers still catch it), but
@@ -1097,7 +1097,7 @@ class SoundLightAPI:
                 await self._transact(baby_uid, message_bytes, message_id)
                 _LOGGER.debug("Control command id=%s on %s acked", message_id, baby_uid)
                 return
-            except CommandTimeout:
+            except CommandTimeoutError:
                 if attempt >= COMMAND_MAX_ATTEMPTS:
                     raise
                 _LOGGER.warning(
@@ -1141,7 +1141,7 @@ class SoundLightAPI:
                     )
                 except asyncio.TimeoutError as e:
                     self._schedule_reconnect(baby_uid)
-                    raise CommandTimeout(
+                    raise CommandTimeoutError(
                         f"No ack for command id={message_id} on {baby_uid} "
                         f"within {COMMAND_ACK_TIMEOUT}s"
                     ) from e
