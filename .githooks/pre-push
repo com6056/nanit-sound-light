@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Pre-push lint gate: run the ruff checks CI enforces so a lint error can't slip
+# into a push and break CI (it has — a missed reformat and an N818 rename). Runs
+# ruff in a throwaway container (the host has no ruff, per the minimal-dep
+# convention). Bypass with `LINT_SKIP=1 git push`; skips with a warning if no
+# container runtime is available. (Pre-push, not pre-commit, so it runs once per
+# push rather than on every commit.)
+set -uo pipefail
+
+[ "${LINT_SKIP:-}" = "1" ] && exit 0
+
+root="$(git rev-parse --show-toplevel)"
+runner=""
+if command -v podman >/dev/null 2>&1; then
+    runner=podman
+elif command -v docker >/dev/null 2>&1; then
+    runner=docker
+fi
+if [ -z "$runner" ]; then
+    echo "pre-push: no podman/docker — skipping ruff gate (GitHub CI still checks)." >&2
+    exit 0
+fi
+
+echo "pre-push: running ruff (format --check + check)…" >&2
+out="$("$runner" run --rm -v "$root":/app:z -w /app docker.io/library/python:3.13-slim \
+    bash -lc 'pip install -q ruff >/dev/null 2>&1 && \
+        ruff format --check --no-cache custom_components tests tests_ha && \
+        ruff check --no-cache custom_components tests tests_ha' 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "$out" | grep -vE "WARNING: Running pip|pip install|notice" >&2
+    echo "" >&2
+    echo "pre-push: BLOCKED — ruff found issues above. Fix them, or 'LINT_SKIP=1 git push' to override." >&2
+    exit 1
+fi
+echo "pre-push: ruff clean." >&2
+exit 0

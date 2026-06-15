@@ -12,7 +12,9 @@ protobuf WebSocket to the device for real-time state and control.
 > (`.leak-denylist.local`, seeded from `.leak-denylist.local.example` — the real
 > terms live only there so they never enter this repo). Enable it per clone with
 > `git config core.hooksPath .githooks`; override a false positive with
-> `LEAK_SCAN_SKIP=1 git commit`.
+> `LEAK_SCAN_SKIP=1 git commit`. A `.githooks/pre-push` gate also runs CI's ruff
+> checks (`format --check` + `check`) in a container before each push so a lint
+> error can't slip in and break CI; bypass with `LINT_SKIP=1 git push`.
 
 ## Layout
 
