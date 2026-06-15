@@ -19,16 +19,16 @@ def _light(coordinator):
     )
 
 
-async def test_light_off_sends_bare_no_color(hass, coordinator):
-    """Light OFF disables only color (sound keeps playing) — no isOn change."""
+async def test_light_off_dims_to_zero_keeping_power(hass, coordinator):
+    """Light OFF = brightness 0 (noColor doesn't darken the light); power/sound
+    untouched so white noise keeps playing."""
     light = _light(coordinator)
     await light.async_turn_off()
     await asyncio.sleep(FLUSH_WAIT)
 
     coordinator.api.send_control_command.assert_awaited_once()
     _, kwargs = coordinator.api.send_control_command.call_args
-    assert kwargs["color"] == {"noColor": True}
-    assert "is_on" not in kwargs  # power untouched -> white noise keeps playing
+    assert kwargs == {"brightness": 0.0}  # only brightness; power/sound untouched
 
 
 async def test_turn_on_restores_device_color_when_no_stored_color(hass, coordinator):
