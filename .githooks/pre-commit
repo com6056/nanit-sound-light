@@ -4,8 +4,8 @@
 #   (2) ruff — auto-fix what it can (format + safe --fix), RE-STAGE those fixes
 #       into the commit, then block only on issues ruff can't fix. This is what
 #       CI enforces, so a lint error can't slip into a push (it has, twice).
-# Runs ruff in a throwaway container (the host has no ruff, per the minimal-dep
-# convention). Bypass lint with LINT_SKIP=1; skips with a warning if no
+# Runs ruff in a throwaway container (no ruff installed locally). Bypass lint
+# with LINT_SKIP=1; skips with a warning if no
 # container runtime. --force-exclude keeps the generated *_pb2.py untouched (CI
 # requires it byte-identical to protoc output).
 set -uo pipefail

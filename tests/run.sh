@@ -8,7 +8,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Prefer podman (matches the host); fall back to docker.
+# Prefer podman; fall back to docker.
 if command -v podman >/dev/null 2>&1; then
     RUNNER="podman"
 elif command -v docker >/dev/null 2>&1; then
