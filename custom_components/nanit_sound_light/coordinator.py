@@ -27,14 +27,17 @@ _LOGGER = logging.getLogger(__name__)
 # so a short window collapses power + sound + volume + light into one write.
 COMMAND_COALESCE_DELAY = 0.15  # seconds
 
-# After a command we "pin" the fields it set for a short window so a stale
-# device echo can't flap them back (the device, or a racing confirmation ping,
-# can briefly report the pre-command value). A pin is released early the moment
-# the device confirms our value, so a genuine later external change isn't
-# blocked. The id stamped on each message is NOT used for correlation by either
-# the device or this integration, so this time-based guard — not the id — is
-# what actually prevents the "turn on → flaps off" race.
-COMMAND_PIN_SECONDS = 3.0
+# After a command we "pin" the fields it set so a stale device echo can't flap
+# them back. The device's ACK is fast but its REPORTED STATE lags badly — it
+# keeps reporting the pre-command value for up to ~15s before catching up (e.g.
+# a power-off: device still says is_on=True for ~15s, then flips). A pin is
+# released early the moment the device confirms our value, so the normal case
+# stays snappy; this window is only the safety cap for that slow propagation, so
+# it must comfortably exceed the lag (and the 30s poll cycle) or the optimistic
+# state flaps back before the device catches up. Trade-off: a genuine external
+# change in this window is suppressed until the device confirms our value or the
+# cap lapses — an acceptable rarity for this device.
+COMMAND_PIN_SECONDS = 30.0
 
 # This is a cloud_push integration: real-time state arrives over the websocket
 # (_on_device_state_change). The periodic poll is only a backup nudge, so it
