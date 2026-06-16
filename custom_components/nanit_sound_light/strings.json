@@ -56,5 +56,15 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "connection_type": {
+        "state": {
+          "local": "Local",
+          "cloud": "Cloud"
+        }
+      }
+    }
   }
 }

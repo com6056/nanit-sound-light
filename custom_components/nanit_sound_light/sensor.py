@@ -185,7 +185,11 @@ class NanitSoundLightConnectionTypeSensor(NanitSoundLightEntity, SensorEntity):
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.ENUM
+    # State values are lowercase machine strings (stable for automations/history);
+    # the UI shows "Local"/"Cloud" via the translation_key state translations in
+    # strings.json — the HA convention for enum sensors.
     _attr_options = ["local", "cloud"]
+    _attr_translation_key = "connection_type"
 
     def __init__(
         self,
