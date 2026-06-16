@@ -1,0 +1,70 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nanit Sound + Light Setup",
+        "description": "Enter your Nanit account credentials to connect your Sound + Light devices.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "mfa": {
+        "title": "Multi-Factor Authentication",
+        "description": "Enter the verification code sent to {email}",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authentication Required",
+        "description": "Your session for {email} has expired. Re-enter your Nanit password to reconnect.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reauth_mfa": {
+        "title": "Re-authentication Required",
+        "description": "Enter the verification code sent to {email}",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Nanit servers. Please check your credentials and try again.",
+      "invalid_auth": "Invalid email or password. Please check your credentials.",
+      "invalid_mfa": "Invalid verification code. Please try again.",
+      "no_devices": "No Sound + Light devices found on your account.",
+      "integration_not_ready": "Integration is still setting up. Please wait a moment and try again.",
+      "unknown": "An unexpected error occurred. Please try again."
+    },
+    "abort": {
+      "already_configured": "This Nanit account is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "no_mfa_pending": "No MFA verification is pending.",
+      "reauth_failed": "Re-authentication failed. Please try deleting and re-adding the integration."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nanit Sound + Light Options",
+        "description": "The integration prefers a direct connection to the device on your local network (faster, more reliable) and falls back to the Nanit cloud automatically. Turn this off to use the cloud only.",
+        "data": {
+          "enable_local_connection": "Use local (LAN) connection when available"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "connection_type": {
+        "state": {
+          "local": "Local",
+          "cloud": "Cloud"
+        }
+      }
+    }
+  }
+}
