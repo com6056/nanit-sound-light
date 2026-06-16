@@ -218,6 +218,13 @@ class SoundLightAPI:
         # Per-speaker local device token: speaker_uid -> (token, expires_at|None).
         # Distinct from the user access token; only the LOCAL socket uses it.
         self._device_tokens: dict[str, tuple[str, float | None]] = {}
+        # Optional async resolver: speaker_uid -> LAN IPv4 (or None). Injected by
+        # the coordinator (HA's zeroconf), because a HA install in a container
+        # usually can't resolve `.local` via libc (no nss-mdns); it finds the
+        # device's mDNS service by uid and returns its IP. When unset we fall back
+        # to handing the deterministic `.local` name to the OS resolver (works on
+        # HA OS / hosts with nss-mdns). Signature: async (speaker_uid) -> str|None.
+        self._local_host_resolver = None
         # Which transport a device's one in-flight command went out on, so a
         # redundant socket dropping doesn't fail a command acked on the other.
         self._inflight_conn_key: dict[str, str] = {}
@@ -953,8 +960,22 @@ class SoundLightAPI:
                 ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
                 token = self._access_token
             else:  # local
-                token = await self._ensure_device_token(speaker_uid)
                 ws_url = self._local_ws_url(speaker_uid)
+                # Resolve the device's LAN IP if a resolver is injected
+                # (HA-in-container can't do `.local` via libc). The resolver
+                # (HA zeroconf) finds the device by uid in its mDNS cache and
+                # returns an IP. On HA OS (no resolver) we hand the deterministic
+                # `.local` name straight to the OS resolver instead.
+                if self._local_host_resolver is not None:
+                    ip = await self._local_host_resolver(speaker_uid)
+                    if not ip:
+                        _LOGGER.debug(
+                            "Local mDNS resolve failed for %s; staying on relay",
+                            speaker_uid,
+                        )
+                        return
+                    ws_url = f"wss://{ip}:{SOUND_LIGHT_LOCAL_WS_PORT}"
+                token = await self._ensure_device_token(speaker_uid)
             if not token:
                 # No usable token (no access token, or local token unavailable).
                 return
@@ -1954,6 +1975,15 @@ class SoundLightAPI:
     def set_token_update_callback(self, callback):
         """Set callback function to be called when tokens are updated."""
         self._token_update_callback = callback
+
+    def set_local_host_resolver(self, resolver) -> None:
+        """Inject an async resolver: speaker_uid -> LAN IPv4 (or None).
+
+        The coordinator wires this to Home Assistant's zeroconf so the LAN path
+        works even when the container's libc resolver can't do mDNS. ``None``
+        falls back to the OS resolver. Signature: async (speaker_uid) -> str|None.
+        """
+        self._local_host_resolver = resolver
 
     def set_mfa_required_callback(self, callback):
         """Set callback function to be called when MFA is required during re-auth."""

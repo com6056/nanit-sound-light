@@ -159,6 +159,57 @@ async def test_device_token_expiration_in_ms_is_scaled(nsl):
 
 
 # ---------------------------------------------------------------------------
+# mDNS resolver injection (HA-in-container can't resolve .local via libc)
+# ---------------------------------------------------------------------------
+
+
+async def test_resolver_substitutes_ip_into_local_url(nsl, monkeypatch):
+    """When a resolver is injected, local connects to wss://<resolved-ip>:442."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._device_tokens["SPK123"] = ("dev-tok", None)
+
+    async def resolver(speaker_uid):
+        assert speaker_uid == "SPK123"
+        return "10.0.0.5"
+
+    api.set_local_host_resolver(resolver)
+
+    captured = {}
+
+    async def fake_connect(url, **_kw):
+        captured["url"] = url
+        raise RuntimeError("stop after capture")  # short-circuit before handler
+
+    monkeypatch.setattr(nsl.api.websockets, "connect", fake_connect)
+    await api._connect_transport(DEVICE, "local")
+
+    assert captured["url"] == "wss://10.0.0.5:442"
+
+
+async def test_resolver_failure_stays_on_relay(nsl, monkeypatch):
+    """If the resolver can't find the device, local connect is skipped entirely."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._device_tokens["SPK123"] = ("dev-tok", None)
+
+    async def resolver(_host):
+        return None
+
+    api.set_local_host_resolver(resolver)
+
+    called = {"connect": False}
+
+    async def fake_connect(_url, **_kw):
+        called["connect"] = True
+        raise RuntimeError("should not be reached")
+
+    monkeypatch.setattr(nsl.api.websockets, "connect", fake_connect)
+    await api._connect_transport(DEVICE, "local")
+
+    assert called["connect"] is False
+    assert not api._transport_connected(_local_key(api))
+
+
+# ---------------------------------------------------------------------------
 # Prefer-local / failover routing (two fake servers)
 # ---------------------------------------------------------------------------
 

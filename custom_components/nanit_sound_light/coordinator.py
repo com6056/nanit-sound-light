@@ -68,6 +68,11 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         # toggle can disable it for environments where `.local` never resolves.
         local_enabled = config_entry.options.get("enable_local_connection", True)
         self.api = SoundLightAPI(session, local_enabled=local_enabled)
+        if local_enabled:
+            # The speaker's LAN address is a deterministic `.local` mDNS name, and
+            # a containerized HA usually can't resolve `.local` via libc. Resolve
+            # it in-process with HA's own zeroconf instead.
+            self.api.set_local_host_resolver(self._resolve_local_host)
 
         # Validate configuration
         if not self.validate_config():
@@ -263,6 +268,76 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Missing required configuration field: %s", CONF_EMAIL)
             return False
         return True
+
+    async def _resolve_local_host(self, speaker_uid: str) -> str | None:
+        """Resolve the speaker's LAN IPv4 via HA's zeroconf, matched by uid.
+
+        The Sound + Light advertises an ``_http._tcp.local.`` mDNS service whose
+        instance name contains the uid and whose TXT properties carry
+        ``UID=<speaker_uid>`` (confirmed in HA's discovery view, e.g. "Nanit Light
+        and Sound (L151AMN2434018)" → 192.168.1.118:442). A containerized HA can't
+        resolve ``.local`` through libc (no nss-mdns), so we browse for the service
+        on HA's shared zeroconf and read the device's address from it — rather than
+        guessing the A-record hostname. Returns None on any failure, leaving the
+        device on the cloud relay.
+        """
+        try:
+            from homeassistant.components import zeroconf as ha_zeroconf
+            from zeroconf import ServiceStateChange
+            from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
+            from zeroconf.const import _CLASS_IN, _TYPE_PTR
+
+            aiozc = await ha_zeroconf.async_get_async_instance(self.hass)
+            zc = aiozc.zeroconf
+            uid = speaker_uid.lower()
+            stype = "_http._tcp.local."
+
+            async def _ipv4_for(name: str) -> str | None:
+                info = AsyncServiceInfo(stype, name)
+                if not info.load_from_cache(zc):
+                    await info.async_request(zc, 3000)
+                for addr in info.parsed_addresses():
+                    if "." in addr and ":" not in addr:  # IPv4
+                        _LOGGER.debug(
+                            "Resolved speaker %s -> %s via mDNS", speaker_uid, addr
+                        )
+                        return addr
+                return None
+
+            # Fast path: a matching service already in HA's zeroconf cache.
+            for rec in zc.cache.get_all_by_details(stype, _TYPE_PTR, _CLASS_IN):
+                name = getattr(rec, "alias", None)
+                if name and uid in name.lower():
+                    ip = await _ipv4_for(name)
+                    if ip:
+                        return ip
+
+            # Otherwise browse _http._tcp briefly and match as instances appear.
+            seen: set[str] = set()
+
+            def _on_change(zeroconf, service_type, name, state_change):
+                if (
+                    state_change is not ServiceStateChange.Removed
+                    and uid in name.lower()
+                ):
+                    seen.add(name)
+
+            browser = AsyncServiceBrowser(zc, stype, handlers=[_on_change])
+            try:
+                for _ in range(30):  # poll for up to ~3s
+                    await asyncio.sleep(0.1)
+                    for name in list(seen):
+                        ip = await _ipv4_for(name)
+                        if ip:
+                            return ip
+            finally:
+                await browser.async_cancel()
+
+            _LOGGER.debug("mDNS: no _http._tcp service matched uid %s", speaker_uid)
+            return None
+        except Exception as e:  # noqa: BLE001 — local is best-effort
+            _LOGGER.debug("mDNS resolve error for %s: %s", speaker_uid, e)
+            return None
 
     async def _ping_device_for_state(self, baby_uid: str) -> None:
         """Send ping command to get current device state using protobuf."""
