@@ -31,7 +31,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # runtime version mismatch). Fail clearly rather than running degraded,
         # where every control/parse path silently no-ops.
         _LOGGER.error(
-            "protobuf is unavailable - the Nanit Sound + Light integration "
+            "protobuf is unavailable. The Nanit Sound + Light integration "
             "cannot function. Check the 'protobuf' Python package version."
         )
         return False
@@ -39,7 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = NanitSoundLightCoordinator(hass, entry)
     # Raises ConfigEntryNotReady on a transient failure (HA retries) or
     # ConfigEntryAuthFailed when the user must re-authenticate (HA opens the
-    # reauth flow) — see the coordinator's _async_update_data.
+    # reauth flow). See the coordinator's _async_update_data.
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

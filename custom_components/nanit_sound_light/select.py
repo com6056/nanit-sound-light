@@ -48,9 +48,14 @@ class NanitSoundLightSoundSelect(NanitSoundLightEntity, SelectEntity):
     ) -> None:
         """Initialize the sound selector."""
         super().__init__(
-            coordinator, device_uid, device_data, "sound", "mdi:music-note"
+            coordinator,
+            device_uid,
+            device_data,
+            "sound",
+            "mdi:music-note",
+            name="Sound",
         )
-        # Options will be set dynamically from device response
+        # Options are set dynamically from the device response.
 
     @property
     def options(self) -> list[str]:
@@ -72,7 +77,7 @@ class NanitSoundLightSoundSelect(NanitSoundLightEntity, SelectEntity):
         if current_sound in available_options:
             return current_sound
 
-        # Handle None or unknown sounds - default to "No sound"
+        # Handle None or unknown sounds, default to "No sound"
         # This provides better UX than showing empty selection
         if current_sound is None or current_sound == "":
             return "No sound"
@@ -81,15 +86,10 @@ class NanitSoundLightSoundSelect(NanitSoundLightEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Select a sound option."""
-        if option in self.options:
-            try:
-                await self.coordinator.async_send_control_command(
-                    self._device_uid, sound=option
-                )
-                _LOGGER.debug(
-                    "Selected sound '%s' for device %s", option, self._device_uid
-                )
-            except Exception as e:
-                self._log_error(f"select sound {option}", e)
-        else:
+        if option not in self.options:
             _LOGGER.warning("Unknown sound option: %s", option)
+            return
+        await self.coordinator.async_send_control_command(
+            self._device_uid, sound=option
+        )
+        _LOGGER.debug("Selected sound '%s' for device %s", option, self._device_uid)

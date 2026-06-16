@@ -3,13 +3,13 @@
 The Sound + Light exposes one physical device as several Home Assistant
 entities (switch/light/select/number). A scene toggles them at once, which used
 to send four racing protobuf messages whose out-of-order responses clobbered
-each other — the device ended up off after a "turn on" scene.
+each other, leaving the device off after a "turn on" scene.
 
 The fix has two parts:
-* ``build_control_message`` packs every field into ONE ``Settings`` message, so
+* `build_control_message` packs every field into ONE `Settings` message, so
   a coalesced multi-field command is a single atomic write.
 * Each message carries a unique, incrementing id (the app correlates responses
-  by it; we used to hardcode ``id=1``).
+  by it, and we used to hardcode `id=1`).
 
 These tests cover the message layer (offline, no Home Assistant). The
 coordinator's time-based coalescing is covered by the HA-fixture layer.
@@ -38,7 +38,7 @@ def test_combined_command_is_one_settings_message(nsl, api):
 
     assert msg.HasField("request")
     settings = msg.request.settings
-    # Every field rides in the one message — no per-field racing writes.
+    # Every field rides in the one message, no per-field racing writes.
     assert settings.isOn is True
     assert settings.volume == pytest.approx(1.0)
     assert settings.sound.track == "Pink Noise"
@@ -71,7 +71,7 @@ def test_no_sound_sets_no_sound_flag(nsl, api):
 
 
 def test_light_off_sends_bare_no_color(nsl, api):
-    """Light OFF is a clean color{noColor:true} — no stray hue/sat/brightness.
+    """Light OFF is a clean color{noColor:true} with no stray hue/sat/brightness.
 
     The old encoding sent noColor + hue:0 + sat:0 + brightness:1.0, which both
     muddied the on/off mechanism and clobbered the device's stored color. We now

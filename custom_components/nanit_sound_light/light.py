@@ -56,7 +56,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
         """Return true if the light is emitting.
 
         The light is on whenever the device is powered AND brightness > 0.
-        ``no_color`` is NOT part of this — on the real device it means "white"
+        `no_color` is NOT part of this. On the real device it means "white"
         (no hue) vs a colored hue, not "light off" (verified on-device: the light
         runs at full brightness with no_color=true). The earlier no_color-based
         on/off was an unverified RE assumption and made the entity read off while
@@ -94,19 +94,6 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
         saturation_percent = saturation_normalized * 100.0  # Convert 0.0-1.0 to 0-100
         return (hue_degrees, saturation_percent)
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return additional state attributes."""
-        device_data = self._get_device_data()
-        return {
-            "volume": device_data.get("volume", 0.0),
-            "current_sound": device_data.get("current_sound"),
-            "brightness_percent": device_data.get("brightness", 0.0) * 100,
-            "device_hue": device_data.get("hue", 0.0),
-            "device_saturation": device_data.get("saturation", 0.0),
-            "no_color": device_data.get("no_color", False),
-        }
-
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the light with brightness and color."""
         _LOGGER.debug("Light turn ON requested for %s", self._device_uid)
@@ -134,7 +121,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
             last = self.coordinator.get_last_color(self._device_uid) or {}
             control_params["brightness"] = last.get("brightness") or 1.0
 
-        # Handle color - always prioritize last stored color when light is off
+        # Handle color: always prioritize last stored color when light is off
         device_data = self._get_device_data()
         current_no_color = device_data.get("no_color", False)
         device_is_on = device_data.get("is_on", False)
@@ -191,7 +178,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                     "brightness": control_params.get("brightness", 1.0),
                 }
                 _LOGGER.debug(
-                    "No stored color for %s; re-enabling with device hue=%.3f sat=%.3f",
+                    "No stored color for %s, re-enabling with device hue=%.3f sat=%.3f",
                     self._device_uid,
                     color_dict["hue"],
                     color_dict["saturation"],
@@ -199,7 +186,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 control_params["color"] = color_dict
                 self.coordinator.save_last_color(self._device_uid, color_dict)
         elif "hs_color" in kwargs:
-            # Device is on and user set explicit color - check if it's different from current
+            # Device is on and user set explicit color, check if it's different from current
             current_hue = device_data.get("hue", 0.0) * 360.0  # Convert to degrees
             current_sat = (
                 device_data.get("saturation", 0.0) * 100.0
@@ -211,7 +198,7 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
             sat_diff = abs(current_sat - saturation)
 
             if hue_diff > 5.0 or sat_diff > 5.0:
-                # Significant color change - use new color
+                # Significant color change, use new color
                 color_dict = {
                     "noColor": False,
                     "hue": float(hue) / 360.0,
@@ -223,33 +210,25 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
                 # Save this as last color for future restoration
                 self.coordinator.save_last_color(self._device_uid, color_dict)
             else:
-                # Color is essentially the same - just a power toggle, don't set color
+                # Color is essentially the same, just a power toggle, don't set color
                 _LOGGER.debug("Color unchanged for %s, not setting", self._device_uid)
 
-        try:
-            _LOGGER.debug("Sending light ON command for %s", self._device_uid)
-            await self.coordinator.async_send_control_command(
-                self._device_uid, **control_params
-            )
-        except Exception as e:
-            _LOGGER.error("Failed to turn on light for %s: %s", self._device_uid, e)
-            self._log_error("turn on light", e)
+        _LOGGER.debug("Sending light ON command for %s", self._device_uid)
+        await self.coordinator.async_send_control_command(
+            self._device_uid, **control_params
+        )
 
     async def async_turn_off(self, **_: Any) -> None:
-        """Turn the light off by dimming to brightness 0, leaving the device on
-        so sound keeps playing.
+        """Turn the light off by dimming to brightness 0, leaving the device on so
+        sound keeps playing.
 
-        ``color.noColor`` does NOT darken the light (it's white-vs-color, verified
-        on-device), so the old ``noColor: true`` off-command was a no-op for the
-        light. Brightness 0 is the real "light off while the device stays on"
-        — the switch still owns whole-device power (isOn). build_control_message
-        leaves the stored color/hue untouched, so it returns on turn-on.
+        color.noColor does NOT darken the light (it is white versus color, verified
+        on-device), so the old noColor:true off-command was a no-op for the light.
+        Brightness 0 is the real "light off while the device stays on". The switch
+        still owns whole-device power (isOn). build_control_message leaves the
+        stored color and hue untouched, so they return on turn-on.
         """
         _LOGGER.debug("Light turn OFF requested for %s", self._device_uid)
-        try:
-            await self.coordinator.async_send_control_command(
-                self._device_uid, brightness=0.0
-            )
-        except Exception as e:
-            _LOGGER.error("Failed to turn off light for %s: %s", self._device_uid, e)
-            self._log_error("turn off light", e)
+        await self.coordinator.async_send_control_command(
+            self._device_uid, brightness=0.0
+        )

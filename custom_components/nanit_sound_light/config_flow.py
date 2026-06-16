@@ -88,7 +88,7 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     # be added twice and so reauth can find this entry.
                     await self.async_set_unique_id(self._email.lower())
                     self._abort_if_unique_id_configured()
-                    # Persist email + refresh_token only — the password is
+                    # Persist email + refresh_token only. The password is
                     # held only in api._stored_password for the duration of
                     # this session, never written to .storage/core.config_entries.
                     data = {
@@ -149,14 +149,14 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "no_devices"
                 else:
                     _LOGGER.info(
-                        "MFA verification successful - found %d device(s)",
+                        "MFA verification successful, found %d device(s)",
                         len(devices),
                     )
                     # Stable per-account unique id so the same Nanit account can't
                     # be added twice and so reauth can find this entry.
                     await self.async_set_unique_id(self._email.lower())
                     self._abort_if_unique_id_configured()
-                    # Persist email + refresh_token only — the password is
+                    # Persist email + refresh_token only. The password is
                     # held only in api._stored_password for the duration of
                     # this session, never written to .storage/core.config_entries.
                     data = {
@@ -267,7 +267,7 @@ class NanitSoundLightOptionsFlow(config_entries.OptionsFlow):
     """Options: toggle the local (LAN) connection preference.
 
     This is a config-entry option (set here via the integration's Configure
-    button), NOT a `configuration.yaml` setting — the integration is config-flow
+    button), NOT a `configuration.yaml` setting. The integration is config-flow
     only. Changing it reloads the entry (see __init__.py's update listener) so the
     new preference takes effect.
     """

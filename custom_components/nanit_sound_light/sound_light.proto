@@ -13,7 +13,7 @@ message Message {
 // Backend connectivity frame. On a fresh remote connect the device's first
 // frame is Message{backend}; the relay reports whether the physical device is
 // attached behind it. The official app treats the remote route as live ONLY
-// once device.status == Connected, and sends nothing before that — sending
+// once device.status == Connected, and sends nothing before that; sending
 // into a Disconnected relay is what produced our command latency. Was
 // previously `bytes`; both bytes and an embedded message are wire type 2, so
 // this is wire-compatible.
@@ -29,10 +29,10 @@ message BackendDevice {
 
 enum DeviceStatus {
     Disconnected = 0;                       // Relay up, device not yet attached
-    Connected = 1;                          // Device attached — safe to send
+    Connected = 1;                          // Device attached, safe to send
 }
 
-// Request message - contains essential message types
+// Request message: contains essential message types
 message Request {
     optional int32 id = 1;                  // Message ID
     optional string sessionId = 200;        // Session ID
@@ -55,7 +55,7 @@ message Response {
     optional Status status = 9;             // Status response (tag 6 is firmware in the app)
 }
 
-// GetSettings request - only fields actually used by integration
+// GetSettings request: only fields actually used by integration
 message GetSettings {
     optional bool all = 1;                  // Get all configuration
     optional bool savedSounds = 7;          // Get saved sounds
@@ -75,7 +75,7 @@ message Settings {
     optional float humidity = 8;            // Humidity sensor
 }
 
-// Color control data - matches official APK structure exactly
+// Color control data: matches official APK structure exactly
 message Color {
     optional bool noColor = 1;              // Disable color
     optional float hue = 2;                 // Hue (0.0-1.0)
@@ -108,7 +108,7 @@ message Status {
 message Empty {}
 
 // GetStatus request body (Request.getStatus). Battery/temp/humidity ride the
-// Status response, NOT GetSettings — this is a separate request type.
+// Status response, NOT GetSettings; this is a separate request type.
 message GetStatus {
     optional bool all = 1;                  // Get everything
     optional bool battery = 2;              // Battery
@@ -130,7 +130,7 @@ enum StateOfCharge {
 }
 
 // Firmware request body (Request.firmware): set `info` present to request the
-// FirmwareInfo readback. (Other app fields — update/status/etc. — omitted.)
+// FirmwareInfo readback. (Other app fields like update/status/etc. omitted.)
 message Firmware {
     optional Empty info = 2;                // Marker: "send me FirmwareInfo"
 }

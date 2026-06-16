@@ -1,4 +1,4 @@
-# Nanit Sound + Light — maintainer & agent notes
+# Nanit Sound + Light: maintainer & agent notes
 
 A Home Assistant custom integration for the Nanit Sound + Light. It is a
 `cloud_push` client: it authenticates to the Nanit cloud over REST, then holds a
@@ -6,15 +6,15 @@ protobuf WebSocket to the device for real-time state and control.
 
 > **This is a PUBLIC repository.** Never commit personal names, internal
 > hostnames or domains, the private infrastructure repo this integration is
-> developed alongside, or unrelated private projects — keep it strictly about
+> developed alongside, or unrelated private projects. Keep it strictly about
 > this integration. A pre-commit leak scan enforces this: `.githooks/leak-scan.sh`
 > blocks any commit whose staged content matches a **gitignored** local denylist
-> (`.leak-denylist.local`, seeded from `.leak-denylist.local.example` — the real
+> (`.leak-denylist.local`, seeded from `.leak-denylist.local.example`. The real
 > terms live only there so they never enter this repo). Enable it per clone with
-> `git config core.hooksPath .githooks`; override a false positive with
+> `git config core.hooksPath .githooks`. Override a false positive with
 > `LEAK_SCAN_SKIP=1 git commit`. The same pre-commit hook also runs **ruff** (in a
 > container): it auto-fixes what it can (`format` + safe `--fix`), **re-stages**
-> those fixes into the commit, and blocks only on issues ruff can't fix — so a
+> those fixes into the commit, and blocks only on issues ruff can't fix, so a
 > lint error can't slip into a push and break CI. Bypass with `LINT_SKIP=1 git commit`.
 
 ## Layout
@@ -37,10 +37,10 @@ tests/            # offline test suite (see Testing)
 `brand/` holds the integration's brand images, served in-repo by HA 2026.3+'s
 brands proxy (no `home-assistant/brands` PR needed). They're the official Nanit
 assets extracted from the apps' vector drawables: the **icon** is the standalone
-Sound + Light app's (`com.nanit.lite`) adaptive launcher — the slate-blue lamp
-mark (`ic_launcher_foreground`) on its `#040433` background color — and the
+Sound + Light app's (`com.nanit.lite`) adaptive launcher (the slate-blue lamp
+mark (`ic_launcher_foreground`) on its `#040433` background color), and the
 **wordmark** logo is the main app's `nanit_logotype`. To regenerate from a newer
-APK: decode the binary AXML VectorDrawables (e.g. via `androguard`; resolve the
+APK: decode the binary AXML VectorDrawables (e.g. via `androguard`, resolving the
 adaptive-icon background color from `resources.arsc` via its `ARSCParser`),
 translate to SVG, render with `cairosvg`. Image spec:
 https://github.com/home-assistant/brands.
@@ -49,14 +49,14 @@ https://github.com/home-assistant/brands.
 
 One physical device is exposed as several HA entities (switch/light/select/number),
 all backed by one coordinator + one websocket. The non-obvious design exists to
-fix two real, recurring failures — don't revert these without understanding why:
+fix two real, recurring failures. Don't revert these without understanding why:
 
 - **Backend readiness gate.** On a fresh remote connect the device's first frame
   is `Message{backend}` reporting whether the physical device is attached behind
   the relay (`Backend.device.status`: `Disconnected=0`/`Connected=1`). The official
-  app sends **nothing** until `Connected` — firing `GetSettings`/commands into a
+  app sends **nothing** until `Connected`. Firing `GetSettings`/commands into a
   still-`Disconnected` relay is what produced our command latency. So `connect_device`
-  no longer pings on open; `is_device_attached()` latches on the backend `Connected`
+  no longer pings on open, `is_device_attached()` latches on the backend `Connected`
   frame (and, defensively, on any genuine `Response`), `wait_for_device_attached()`
   gates sends, and entity `available` requires it. A command still falls back to a
   best-effort send if the frame never arrives (a missed/renamed frame mustn't brick
@@ -67,65 +67,66 @@ fix two real, recurring failures — don't revert these without understanding wh
   message id, sends, then **awaits the `Response` whose `requestId` matches**
   (`COMMAND_ACK_TIMEOUT`, 10s), under a per-device send lock so transactions never
   overlap on the wire. **A slow/absent ack on a live socket does NOT re-send and
-  does NOT roll back** — the device is busy, not gone, and re-sending piles
+  does NOT roll back**: the device is busy, not gone, and re-sending piles
   duplicate commands onto an already-overloaded device, which makes it stop
   responding for ~30s and then flush the whole backlog at once (observed on-device
   2026-06-15). The app never retries either. So a control timeout is accepted
-  optimistically (the pin holds the UI; the device pushes real state when it
-  catches up; the 30s poll reconciles); only an actual socket **drop** or an
-  explicit **non-2xx rejection** raises → coordinator rolls back. Polls
+  optimistically (the pin holds the UI, the device pushes real state when it
+  catches up, the 30s poll reconciles). Only an actual socket **drop** or an
+  explicit **non-2xx rejection** raises, so the coordinator rolls back. Polls
   (`require_ack=False`) are still serialized + drained but swallow timeouts. The app
-  awaits every request incl. `GetSettings`; a poll that released the lock before its
-  response (the old behavior) could overlap a command unacked — the exact "bursts of
+  awaits every request incl. `GetSettings`. A poll that released the lock before its
+  response (the old behavior) could overlap a command unacked: the exact "bursts of
   unacked transactions" that wedge the device. Don't reintroduce a send that
   bypasses `_transact`, and **don't re-add command-level retry** (it was removed
-  for the reason above). (The `requestId` correlation is real — distinct from the
+  for the reason above). (The `requestId` correlation is real, distinct from the
   pin-guard's id, which stays logging-only. All requests use unique ids via
-  `_next_message_id`, starting at 1 like the app's `AtomicInteger`; `sessionId` is a
+  `_next_message_id`, starting at 1 like the app's `AtomicInteger`. `sessionId` is a
   random per-connection token.) Validated on-device 2026-06-15: a 20-command
   hammer acked sub-2s with zero duplicates/stalls.
 - **mDNS resolver needs the `zeroconf` dependency.** The coordinator imports
   `homeassistant.components.zeroconf` to resolve the device's `.local` address, so
   the manifest declares `after_dependencies: ["zeroconf"]` (hassfest fails
-  otherwise). It's `after_` (not a hard dep) because local is best-effort — a
+  otherwise). It's `after_` (not a hard dep) because local is best-effort, a
   cloud-only user doesn't need it.
 - **Connection Type sensor.** A diagnostic enum sensor (`local`/`cloud`) reflecting
-  `api.active_transport()` — what's actually carrying sends right now. Backed by
+  `api.active_transport()`, what's actually carrying sends right now. Backed by
   `_active_connection_key` (local preferred). Unavailable when the device is
   unreachable (base entity gates on `is_websocket_connected`).
 - **Command coalescing.** A scene toggles power + sound + volume + light at once.
   Sent as separate protobuf messages they race, and out-of-order responses make
   the device end up in the wrong state (classic symptom: a "turn on" scene leaves
   it off). The coordinator therefore gathers commands arriving within
-  `COMMAND_COALESCE_DELAY` and flushes them as **one** combined `Settings` message
-  — the same "apply a preset" shape the official app uses. Don't go back to
+  `COMMAND_COALESCE_DELAY` and flushes them as **one** combined `Settings` message,
+  the same "apply a preset" shape the official app uses. Don't go back to
   one-message-per-field.
 - **Pin-guard.** After a command, the affected fields are "pinned" for
   `COMMAND_PIN_SECONDS` so a stale device echo (or a racing confirmation ping)
   can't flap a just-commanded value back. A pin releases early the moment the
   device confirms the value, so genuine later external changes still flow. The
-  monotonic message id is **logging only** — neither the device nor this
+  monotonic message id is **logging only**. Neither the device nor this
   integration correlates responses by it, so this time-based pin (not the id) is
   what prevents the flap.
 - **Optimistic + rollback.** Commands apply optimistic state immediately for a
-  snappy UI; a failed send rolls that back so the UI never shows a state the
+  snappy UI, and a failed send rolls that back so the UI never shows a state the
   device didn't accept.
 - **Power vs light on/off.** The device has a single power primitive, `isOn`,
-  owned by the **switch** (`switch.turn_on/off` → bare `Settings{isOn}`). The
-  **light** is disabled independently via `color.noColor` so white noise keeps
-  playing when you turn the light off — `light.turn_off` sends a bare
-  `Settings{color{noColor: true}}` (NOT the old `noColor + brightness:1.0`, whose
-  `brightness:1.0` was ambiguous and didn't move the right read-back).
-  `build_control_message` omits any color sub-field not provided, so the device's
-  stored color survives an off/on cycle. `light.turn_on` keeps the "set
-  `sound:'No sound'` when the device was off" guard so flipping the light on
+  owned by the **switch** (`switch.turn_on/off` sends a bare `Settings{isOn}`). The
+  **light** turns off by dimming to `brightness:0` so white noise keeps playing,
+  leaving whole-device power to the switch. `color.noColor` is white-versus-color,
+  NOT light on/off (verified on-device), so `light.turn_off` sends a bare
+  `Settings{brightness:0}`, not a `noColor` write. The light's `is_on` is therefore
+  "device powered AND brightness > 0". `build_control_message` omits any color
+  sub-field not provided, so the device's stored color survives an off/on cycle.
+  `light.turn_on` keeps the "set `sound:'No sound'` when the device was off" guard
+  so flipping the light on
   doesn't unexpectedly resume audio (intentional divergence from the app, which
   sends bare `isOn`).
 - **WebSocket keepalive / reconnect.** The device keeps its socket alive with
-  **protocol-level ping/pong (~20s)** — there is no app-level keepalive frame, so
+  **protocol-level ping/pong (~20s)**. There is no app-level keepalive frame, so
   rely on the WS ping (`WS_PING_INTERVAL`), don't invent a heartbeat message. On a
-  drop, reconnect **proactively** with backoff `0 → 2 → 5 → 7s` (remote;
-  `0 → 3 → 10 → 60 → 90s` for local — don't wait for the 30s poll). The handler
+  drop, reconnect **proactively** with backoff `0 → 2 → 5 → 7s` (remote,
+  `0 → 3 → 10 → 60 → 90s` for local, don't wait for the 30s poll). The handler
   task is kept referenced so it can't be GC'd, and a send while disconnected
   raises rather than silently no-op'ing.
 - **Dual transport: prefer local (LAN), fall back to remote (relay).** The cloud
@@ -135,7 +136,7 @@ fix two real, recurring failures — don't revert these without understanding wh
   and a `remote` socket open at once (keyed `baby_uid::transport`), and sends pick
   the **local** socket when it's up (`_active_connection_key`), falling back to
   remote. Device-level state (attachment, the one-in-flight ack map, the send
-  lock, sessionId) is shared across a device's transports — only the URL + auth
+  lock, sessionId) is shared across a device's transports, only the URL + auth
   token differ. The local URL is the deterministic mDNS name
   `wss://Nanit-<speaker_uid>.local:442` (NO path, unlike the relay), local auth is
   `Authorization: token <device_token>` (a **per-device** token from
@@ -145,28 +146,39 @@ fix two real, recurring failures — don't revert these without understanding wh
   unconditionally. Local is **best-effort and self-healing**: if the device-token
   fetch fails or `Nanit-<uid>.local` doesn't resolve on the HA host, the local
   connect is swallowed and the integration stays on the relay. Availability =
-  ANY transport up. **The backend readiness frame is relay-only** — a pure-local
-  connection latches `is_device_attached` on its first `Response` instead (the
-  existing defensive latch already covers this). Enabled by default; the
+  ANY transport up. **The backend readiness frame is relay-only**, so a local
+  socket marks `is_device_attached` the moment it connects (a direct LAN socket
+  means the device is present and reachable). A relay socket still waits for the
+  Connected frame. That is what lets a pure-local connection (cloud down) bootstrap
+  its poll, which otherwise gates on attachment. Enabled by default. The
   `enable_local_connection` entry option (default `True`) can turn it off. All RE
-  for this lives in the private infra repo (not here). **Not yet validated against
-  a real device** — the send
-  path degrades to remote if any local assumption is wrong, so a bad guess can't
-  brick control.
+  for this lives in the private infra repo (not here). **Validated end-to-end on a
+  real device 2026-06-15** (mDNS resolve, device-token auth, trust-all TLS,
+  prefer-local sends, cloud fallback, and a 20-command burst with no stalls). The
+  send path still degrades to remote if any local assumption fails, so a bad guess
+  can't brick control.
+- **Entity naming uses `has_entity_name`.** The base entity sets
+  `_attr_has_entity_name = True` and each entity provides a short label (or `None`
+  for the device-class default, like Temperature or Battery). Home Assistant
+  composes "<device> <label>". The light passes `None` so it reads as just the
+  device name (the primary entity). Power/Volume/Sound/Firmware pass explicit
+  labels, and Connection Type names itself through its `translation_key`. The
+  `unique_id` values stay `f"{device_uid}_{entity_type}"`, so they are stable across
+  this change.
 
 ## Protocol facts worth knowing
 
-- Control + state ride on a protobuf `Message { request, response, backend }`;
-  control is `Request.settings`, device state arrives as `Response.settings`, and
+- Control + state ride on a protobuf `Message { request, response, backend }`.
+  Control is `Request.settings`, device state arrives as `Response.settings`, and
   `backend` is the readiness frame (`Backend.device.status`). `Message.backend` was
-  `bytes` and is now a structured `Backend` message at the **same tag 3** — both
+  `bytes` and is now a structured `Backend` message at the **same tag 3**, and both
   are wire type 2, so the change is wire-compatible.
 - `Settings` fields used here: `brightness=1, color=2, volume=3, sound=4, isOn=5,
 soundList=6, temperature=7, humidity=8`. Newer firmware/app builds **append**
-  higher-numbered fields; protobuf skips unknown tags, so the schema above stays
+  higher-numbered fields, but protobuf skips unknown tags, so the schema above stays
   correct and `sound_light.proto` does not need changes for them.
 - Secrets: the account password is **not** persisted to `.storage` (only email +
-  refresh token); auth responses are redacted before debug logging. Keep it that
+  refresh token), and auth responses are redacted before debug logging. Keep it that
   way.
 - **Diagnostics ride separate query requests, NOT the GetSettings poll.** Battery
   (`sensor` % + `binary_sensor` charging), wifi RSSI (`sensor`, diagnostic, SSID/
@@ -176,17 +188,20 @@ soundList=6, temperature=7, humidity=8`. Newer firmware/app builds **append**
   (`StateOfCharge` is a coarse 5-bucket enum → `_SOC_TO_PERCENT`), `Network{getStatus}`
   → `Response.networkStatus.currentAp`, `Firmware{info}` → `Response.firmware`
   (a bare `FirmwareInfo`). The `info`/`getStatus` request fields are present-but-
-  empty `Empty` markers (`SetInParent()`). Battery+wifi poll every cycle; firmware
-  is fetched once (it's static). All go through `_transact` with a shorter
-  `DIAGNOSTICS_ACK_TIMEOUT` so a firmware that ignores them can't hold the send
-  lock. **Tags are from the app's `@ProtoNumber` descriptors, NOT element-index+1**
+  empty `Empty` markers (`SetInParent()`). Battery and wifi poll every cycle.
+  Firmware is fetched once (it's static). They are sent fire-and-forget via
+  `_send_no_wait` (not `_transact`), so a firmware that ignores a query can't hold
+  the send lock. The responses are still drained and parsed by the handler. The
+  SSID, BSSID, and firmware strings are run through `_clean_device_string` (length
+  clamp plus printable check) before being exposed, like the sound-track list.
+  **Tags are from the app's `@ProtoNumber` descriptors, NOT element-index+1**
   (that heuristic is off-by-one whenever a message has explicit `@ProtoNumber` or a
-  high-tag field like `sessionId=200` — `Request.getStatus=11`, `Response.firmware=6`,
+  high-tag field like `sessionId=200`: `Request.getStatus=11`, `Response.firmware=6`,
   `networkStatus=8`, `status=9`).
 
 ## Testing
 
-Offline, never touches a real device — a `block_nanit_network` fixture fails any
+Offline, never touches a real device. A `block_nanit_network` fixture fails any
 test that resolves `*.nanit.com`.
 
 ```
@@ -194,15 +209,15 @@ test that resolves `*.nanit.com`.
 ./tests/run.sh -k color   # extra args pass through to pytest
 ```
 
-- `test_protobuf_contract.py` — schema lock (proto tags, incl. `backend`) + parse
+- `test_protobuf_contract.py`: schema lock (proto tags, incl. `backend`) + parse
   round-trip + backend-frame → `is_device_attached` + Response→pending-ack resolve.
-- `test_control_message.py` — combined-command atomicity + id monotonicity + the
+- `test_control_message.py`: combined-command atomicity + id monotonicity + the
   bare-`noColor` light-off encoding + `sessionId` stamping.
-- `test_websocket_reconnect.py` — reconnect backoff, send reaches socket, and
+- `test_websocket_reconnect.py`: reconnect backoff, send reaches socket, and
   proactive reconnect after a server drop (against an in-process fake server that
   now also sends a backend `Connected` frame and acks control requests). Covers the
   attach gate, ack-on-success, non-2xx rejection, and slow-ack-without-resend.
-- `test_local_connection.py` — the direct-LAN transport: the deterministic mDNS
+- `test_local_connection.py`: the direct-LAN transport, with the deterministic mDNS
   URL, trust-all TLS context, device-token fetch/parse (incl. ms→s expiry scaling
   and 404 → no token), and the routing (prefer-local, fall back to remote when
   local drops, availability while one transport is down, local-disabled connects
@@ -210,21 +225,27 @@ test that resolves `*.nanit.com`.
   `_FakeNanit` from `test_websocket_reconnect.py`.
 
 The heavier **Home Assistant fixture** suite lives in `tests_ha/` (it installs
-Home Assistant, so it's a separate run — `./tests_ha/run.sh`). It drives the real
+Home Assistant, so it's a separate run via `./tests_ha/run.sh`). It drives the real
 coordinator/entities with a mocked api to cover the logic the offline suite can't:
 command coalescing, the pin-guard, optimistic rollback on a failed send, and
-entity availability. Keep the two suites in separate processes — both import the
+entity availability. Keep the two suites in separate processes, since both import the
 generated protobuf module and would double-register its descriptors otherwise.
 
 CI (`.github/workflows/ci.yml`) runs ruff + prettier + protobuf-drift check +
-hassfest + HACS validation + both pytest jobs. Regenerate the protobuf with `ci.sh`.
+hassfest + HACS validation + both pytest jobs. `ci.sh` mirrors most of that
+locally (ruff, prettier, protobuf regen, and hassfest via the same container image
+CI uses) so a CI failure like a missing manifest dependency is caught before
+pushing. Run it before a release. The hassfest step mounts only `custom_components`
+so the gitignored `.re/` decompile tree (which has stray `manifest.json` files)
+can't trip it. The test runners cache pip downloads in a named volume, so only the
+first run pays the install cost.
 
 `scripts/live_test.py` is a manual harness for testing api.py changes against a
 **real device** without a HA deploy (loads the api standalone, auths, connects
-local + cloud, prints status/state). Safe by default (read-only); set
+local + cloud, prints status/state). Safe by default (read-only). Set
 `NANIT_SEND_TEST=1` for a gentle light demo. Creds via env
 (`NANIT_REFRESH_TOKEN` or `NANIT_EMAIL`/`NANIT_PASSWORD`), optional
-`NANIT_DEVICE_IP`. Not part of CI — it needs real creds + device.
+`NANIT_DEVICE_IP`. Not part of CI, it needs real creds + device.
 
 ## Release-polish status
 
@@ -232,11 +253,11 @@ Addressed in the pre-release pass:
 
 - Entities go **unavailable** on socket/cloud outage (base entity gates on
   `last_update_success` + `is_websocket_connected`).
-- Setup raises `ConfigEntryNotReady` / `ConfigEntryAuthFailed`; **reauth** is
+- Setup raises `ConfigEntryNotReady` / `ConfigEntryAuthFailed`, and **reauth** is
   self-contained (re-prompts for the password, handles MFA, rotates the token).
-- The `cloud_push` poll no longer busy-waits — it's a light backup over the push
+- The `cloud_push` poll no longer busy-waits, it's a light backup over the push
   socket.
-- `websockets>=13.0` (we use the modern `additional_headers` connect API); setup
+- `websockets>=13.0` (we use the modern `additional_headers` connect API), and setup
   fails loudly on a protobuf import error. `protobuf` is left broad on purpose so
   it's satisfied by whatever HA ships rather than forcing a conflicting upgrade.
 - HACS hygiene: no `country` gate, `config.abort` strings, `integration_type`,
@@ -244,6 +265,6 @@ Addressed in the pre-release pass:
 - Coordinator/entity behavior is covered by the `tests_ha/` Home Assistant fixture
   suite (coalescing, pin-guard, rollback, availability, auth/reauth, poll).
 
-A manifest `quality_scale` is intentionally omitted — it's a formal HA
+A manifest `quality_scale` is intentionally omitted. It's a formal HA
 assessment against documented rules, not a self-asserted label, so it's left off
 rather than claimed.

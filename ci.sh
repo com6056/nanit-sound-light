@@ -125,13 +125,41 @@ else
     exit 1
 fi
 
+# 6. Hassfest (manifest, translations, dependency validation)
+# This is the check that caught the missing zeroconf dependency. Run the same
+# image CI uses. Mount only custom_components, not the whole repo: the gitignored
+# .re/ decompile tree contains stray manifest.json files that break validation,
+# and CI never sees them because they are gitignored.
+print_step "Running hassfest..."
+if command -v podman &> /dev/null; then
+    CONTAINER_RUNNER="podman"
+elif command -v docker &> /dev/null; then
+    CONTAINER_RUNNER="docker"
+else
+    CONTAINER_RUNNER=""
+fi
+if [ -n "$CONTAINER_RUNNER" ]; then
+    if $CONTAINER_RUNNER run --rm \
+        -v "$PWD/custom_components:/github/workspace/custom_components:z" \
+        ghcr.io/home-assistant/hassfest; then
+        print_success "Hassfest passed"
+    else
+        print_error "Hassfest failed"
+        exit 1
+    fi
+else
+    print_error "Skipping hassfest: needs podman or docker"
+    exit 1
+fi
+
 print_success "All CI checks passed! 🎉"
 echo ""
 echo "Summary:"
 echo "  ✅ Python formatting (ruff format)"
-echo "  ✅ Python linting (ruff check)" 
+echo "  ✅ Python linting (ruff check)"
 echo "  ✅ File formatting (prettier)"
 echo "  ✅ Protobuf generation"
 echo "  ✅ Protobuf up-to-date check"
+echo "  ✅ Hassfest validation"
 echo ""
 echo "Ready for commit and release! 🚀"

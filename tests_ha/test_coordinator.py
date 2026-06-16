@@ -35,7 +35,7 @@ async def test_optimistic_state_is_applied_immediately(hass, coordinator):
 
 
 async def test_pin_guard_suppresses_stale_echo_then_releases(hass, coordinator):
-    """A stale 'off' echo can't flap a just-commanded 'on'; real changes resume."""
+    """A stale 'off' echo can't flap a just-commanded 'on', and real changes resume."""
     await coordinator.async_send_control_command("baby1", is_on=True)
     assert coordinator.data["devices"]["baby1"]["is_on"] is True
 

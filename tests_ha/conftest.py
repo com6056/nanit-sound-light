@@ -2,7 +2,7 @@
 
 These tests run the real coordinator/entities against a `hass` event loop
 (provided by pytest-homeassistant-custom-component) with a mocked SoundLightAPI,
-so the coalescing/pin-guard/rollback/availability logic actually executes — but
+so the coalescing/pin-guard/rollback/availability logic actually executes, but
 no network and no real device (the api is a mock, and a socket guard fails any
 accidental real connection).
 """
@@ -28,7 +28,7 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 
 @pytest.fixture(autouse=True)
 def block_nanit_network(monkeypatch):
-    """Fail any attempt to resolve a Nanit host — tests use the mocked api only."""
+    """Fail any attempt to resolve a Nanit host. Tests use the mocked api only."""
     real = socket.getaddrinfo
 
     def guarded(host, *args, **kwargs):

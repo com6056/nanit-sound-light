@@ -32,20 +32,20 @@ _LOGGER = logging.getLogger(__name__)
 COMMAND_COALESCE_DELAY = 0.15  # seconds
 
 # After a command we "pin" the fields it set so a stale device echo can't flap
-# them back. The device's ACK is fast but its REPORTED STATE lags badly — it
+# them back. The device's ACK is fast but its REPORTED STATE lags badly: it
 # keeps reporting the pre-command value for up to ~15s before catching up (e.g.
 # a power-off: device still says is_on=True for ~15s, then flips). A pin is
 # released early the moment the device confirms our value, so the normal case
-# stays snappy; this window is only the safety cap for that slow propagation, so
+# stays snappy. This window is only the safety cap for that slow propagation, so
 # it must comfortably exceed the lag (and the 30s poll cycle) or the optimistic
 # state flaps back before the device catches up. Trade-off: a genuine external
 # change in this window is suppressed until the device confirms our value or the
-# cap lapses — an acceptable rarity for this device.
+# cap lapses, an acceptable rarity for this device.
 COMMAND_PIN_SECONDS = 30.0
 
 # This is a cloud_push integration: real-time state arrives over the websocket
 # (_on_device_state_change). The periodic poll is only a backup nudge, so it
-# never busy-waits — it waits briefly only when a device has no state yet (first
+# never busy-waits. It waits briefly only when a device has no state yet (first
 # poll, or after a reconnect lost it), capped by these.
 INITIAL_STATE_ATTEMPTS = 6  # × interval ≈ 3s max
 INITIAL_STATE_INTERVAL = 0.5  # seconds
@@ -62,7 +62,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             name=DOMAIN,
             update_interval=timedelta(
                 seconds=30
-            ),  # 30 seconds - faster polling as backup for WebSocket events
+            ),  # 30 seconds, faster polling as backup for WebSocket events
         )
         self.config_entry = config_entry
         # Use shared session from Home Assistant
@@ -100,9 +100,9 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
         # Initialize API with the email + refresh_token only. Password lives
         # in memory only after a successful authenticate() call within this
-        # session — it is never loaded from disk. If HA restarts and the
+        # session. It is never loaded from disk. If HA restarts and the
         # refresh token has been rejected, the integration will require the
-        # user to remove + re-add it (rare; refresh tokens are long-lived
+        # user to remove + re-add it (rare, since refresh tokens are long-lived
         # and rotated on every successful login).
         email = self.config_entry.data[CONF_EMAIL]
         refresh_token = self.config_entry.data.get("refresh_token")
@@ -127,11 +127,11 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         # simultaneously. Sending four racing protobuf messages let their
         # out-of-order responses clobber each other (device ended up off after
         # a "turn on" scene). We instead accumulate fields arriving within a
-        # short window and flush them as ONE combined Settings message — the
+        # short window and flush them as ONE combined Settings message, the
         # same "apply a preset" pattern the official app uses.
         self._pending_commands: dict[str, dict[str, Any]] = {}
         self._flush_handles: dict[str, asyncio.TimerHandle] = {}
-        # Per device: {device_field: (commanded_value, expiry_loop_time)} — see
+        # Per device: {device_field: (commanded_value, expiry_loop_time)}, see
         # COMMAND_PIN_SECONDS. And a snapshot of pre-command values so a failed
         # send can be rolled back instead of leaving the UI showing a state the
         # device never accepted.
@@ -160,7 +160,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                 # serving cached data, or report not-ready if we have none yet.
                 if self.data:
                     _LOGGER.warning(
-                        "Authentication temporarily unavailable - using cached data"
+                        "Authentication temporarily unavailable, using cached data"
                     )
                     return self.data
                 raise UpdateFailed("Authentication temporarily unavailable")
@@ -185,16 +185,16 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                     baby_uid = device["baby_uid"]
                     await self.api.send_saved_sounds_request(baby_uid)
 
-            # Refresh device state. Nudge each device with a ping; the push
+            # Refresh device state. Nudge each device with a ping, and the push
             # callback applies the response. Only wait when we have no state for
-            # a device yet — never busy-wait on every poll.
+            # a device yet, and never busy-wait on every poll.
             for device in self._devices:
                 baby_uid = device["baby_uid"]
                 try:
                     await self.api.send_ping_for_state(baby_uid)
 
                     # Diagnostics (separate query types, best-effort). Battery +
-                    # wifi change over time so poll them each cycle; firmware is
+                    # wifi change over time so poll them each cycle. Firmware is
                     # effectively static, so fetch it once (when still unknown).
                     await self.api.send_status_request(baby_uid)
                     await self.api.send_network_request(baby_uid)
@@ -264,7 +264,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
     def validate_config(self) -> bool:
         """Validate that we have required configuration data."""
         # Only email is required on disk. The password is no longer
-        # persisted — it lives in memory after authenticate() during the
+        # persisted. It lives in memory after authenticate() during the
         # session. The refresh_token is optional at validate time because
         # it might not have been issued yet on a fresh entry.
         if (
@@ -278,12 +278,12 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
     async def _resolve_local_host(self, speaker_uid: str) -> str | None:
         """Resolve the speaker's LAN IPv4 via HA's zeroconf, matched by uid.
 
-        The Sound + Light advertises an ``_http._tcp.local.`` mDNS service whose
+        The Sound + Light advertises an `_http._tcp.local.` mDNS service whose
         instance name contains the uid and whose TXT properties carry
-        ``UID=<speaker_uid>`` (confirmed in HA's discovery view, e.g. "Nanit Light
+        `UID=<speaker_uid>` (confirmed in HA's discovery view, e.g. "Nanit Light
         and Sound (L151AMN2434018)" → 192.168.1.118:442). A containerized HA can't
-        resolve ``.local`` through libc (no nss-mdns), so we browse for the service
-        on HA's shared zeroconf and read the device's address from it — rather than
+        resolve `.local` through libc (no nss-mdns), so we browse for the service
+        on HA's shared zeroconf and read the device's address from it, rather than
         guessing the A-record hostname. Returns None on any failure, leaving the
         device on the cloud relay.
         """
@@ -341,7 +341,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
             _LOGGER.debug("mDNS: no _http._tcp service matched uid %s", speaker_uid)
             return None
-        except Exception as e:  # noqa: BLE001 — local is best-effort
+        except Exception as e:  # noqa: BLE001 (local is best-effort)
             _LOGGER.debug("mDNS resolve error for %s: %s", speaker_uid, e)
             return None
 
@@ -357,7 +357,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
     async def async_send_control_command(self, baby_uid: str, **kwargs) -> None:
         """Queue a control command, coalescing concurrent fields into one send.
 
-        Entity services (switch/light/select/number) call this; a scene calls
+        Entity services (switch/light/select/number) call this, and a scene calls
         several at once. Rather than sending a racing message per field, we
         merge the fields, apply optimistic state for instant UI feedback, and
         schedule a single combined flush.
@@ -445,9 +445,9 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         """Merge parsed device state into target, honoring active command pins.
 
         A pinned field is suppressed only while the pin is active AND the
-        incoming value contradicts what we commanded; if the device confirms our
-        value (or the window lapses) the pin is released so normal updates — and
-        genuine external changes — flow again.
+        incoming value contradicts what we commanded. If the device confirms our
+        value (or the window lapses) the pin is released so normal updates (and
+        genuine external changes) flow again.
         """
         now = self.hass.loop.time()
         pins = self._pinned_fields.get(baby_uid, {})
@@ -495,12 +495,12 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             # and the device pushes the resulting state as a Request{settings}
             # frame on its own. An extra GetSettings here just added contention
             # (it competed with the next command for the send lock). The 30s poll
-            # remains a backstop. Accepted -> drop the rollback snapshot.
+            # remains a backstop. Accepted: drop the rollback snapshot.
             self._rollback_snapshot.pop(baby_uid, None)
         except Exception as e:
             error_type = type(e).__name__
             _LOGGER.error(
-                "Control command failed for %s (%s): %s — rolling back",
+                "Control command failed for %s (%s): %s, rolling back",
                 baby_uid[:8] + "...",
                 error_type,
                 e,
@@ -527,8 +527,8 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
 
         The api layer has already parsed the inbound message into its device
         state, so we merge that into coordinator data and notify listeners.
-        The old behaviour fired ``async_request_refresh`` on *every* inbound
-        message, and each refresh did a fresh ping with a multi-second wait —
+        The old behaviour fired `async_request_refresh` on *every* inbound
+        message, and each refresh did a fresh ping with a multi-second wait,
         which amplified the command race instead of settling it.
         """
         _LOGGER.debug("Real-time state change detected for device %s", baby_uid)

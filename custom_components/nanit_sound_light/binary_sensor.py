@@ -45,9 +45,7 @@ class NanitSoundLightChargingSensor(NanitSoundLightEntity, BinarySensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the charging binary sensor."""
-        super().__init__(
-            coordinator, device_uid, device_data, "charging", "mdi:power-plug"
-        )
+        super().__init__(coordinator, device_uid, device_data, "charging")
         self._attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
 
     @property

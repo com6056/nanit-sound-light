@@ -3,5 +3,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Real private terms for the pre-commit leak scan — must never be committed.
+# Real private terms for the pre-commit leak scan; must never be committed.
 .leak-denylist.local

@@ -46,7 +46,12 @@ class NanitSoundLightVolume(NanitSoundLightEntity, NumberEntity):
     ) -> None:
         """Initialize the volume control."""
         super().__init__(
-            coordinator, device_uid, device_data, "volume", "mdi:volume-high"
+            coordinator,
+            device_uid,
+            device_data,
+            "volume",
+            "mdi:volume-high",
+            name="Volume",
         )
         self._attr_mode = NumberMode.SLIDER
         self._attr_native_min_value = 0
@@ -64,10 +69,7 @@ class NanitSoundLightVolume(NanitSoundLightEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume percentage."""
-        try:
-            volume_float = value / 100.0  # Convert 0-100 to 0.0-1.0
-            await self.coordinator.async_send_control_command(
-                self._device_uid, volume=volume_float
-            )
-        except Exception as e:
-            self._log_error("set volume", e)
+        volume_float = value / 100.0  # Convert 0-100 to 0.0-1.0
+        await self.coordinator.async_send_control_command(
+            self._device_uid, volume=volume_float
+        )

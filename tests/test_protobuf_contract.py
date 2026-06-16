@@ -2,13 +2,13 @@
 
 Two jobs:
 
-* **Schema lock** — assert the field numbers (proto tags) of the messages we
+* **Schema lock**: assert the field numbers (proto tags) of the messages we
   send/parse match what the official app v4.68.0 uses. If someone regenerates
-  ``sound_light.proto`` and a tag shifts, this fails here instead of silently
+  `sound_light.proto` and a tag shifts, this fails here instead of silently
   misreading device state at runtime.
-* **Parse round-trip** — build a device→app message with known bytes and assert
-  ``SoundLightAPI._process_protobuf_message`` decodes it into the expected
-  ``_device_state``.
+* **Parse round-trip**: build a device→app message with known bytes and assert
+  `SoundLightAPI._process_protobuf_message` decodes it into the expected
+  `_device_state`.
 
 All offline: pure protobuf bytes, no socket, no Home Assistant.
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 # Field number → name, confirmed against Nanit app v4.68.0 (nanitlite/control).
-# The first 8 Settings fields are unchanged since the v4.0.6 reverse-engineering;
+# The first 8 Settings fields are unchanged since the v4.0.6 reverse-engineering.
 # v4.68.0 only *appends* favorites(9)..cryDetection(15), which protobuf skips.
 SETTINGS_TAGS = {
     "brightness": 1,
@@ -73,7 +73,7 @@ def test_backend_tags_match_app(nsl):
 
 
 def test_response_status_tag_matches_app(nsl):
-    """Response.status is tag 9 in the app (tag 6 is firmware) — a prior off-by
+    """Response.status is tag 9 in the app (tag 6 is firmware). A prior off-by
     mistag would silently drop or misread any Status-carried sensor frame."""
     fields = nsl.pb2.Response.DESCRIPTOR.fields_by_name
     assert fields["status"].number == 9
@@ -84,11 +84,11 @@ def test_response_status_tag_matches_app(nsl):
 
 
 async def test_backend_connected_frame_marks_device_attached(nsl, api):
-    """A Backend{Connected} frame attaches; attachment is STICKY thereafter.
+    """A Backend{Connected} frame attaches, and attachment is STICKY thereafter.
 
     The real device emits bare/Disconnected backend frames periodically while
-    fully usable, so a non-Connected frame must NOT flip the device unavailable —
-    only a socket drop clears attachment (covered in the reconnect suite).
+    fully usable, so a non-Connected frame must NOT flip the device unavailable.
+    Only a socket drop clears attachment (covered in the reconnect suite).
     """
     pb2 = nsl.pb2
 
@@ -100,7 +100,7 @@ async def test_backend_connected_frame_marks_device_attached(nsl, api):
     )
     assert api.is_device_attached("baby123") is True
 
-    # A later Disconnected/bare frame is ignored — attachment stays sticky.
+    # A later Disconnected/bare frame is ignored, so attachment stays sticky.
     disconnected = pb2.Message(
         backend=pb2.Backend(device=pb2.BackendDevice(status=pb2.Disconnected))
     )
@@ -171,7 +171,7 @@ async def test_external_request_change_triggers_callback(nsl, api):
 
 def test_diagnostics_tags_match_app(nsl):
     """Battery/wifi/firmware request+response tags (from the app's @ProtoNumber,
-    NOT element-index+1 — a prior heuristic pass got these wrong)."""
+    NOT element-index+1, which a prior heuristic pass got wrong)."""
     pb2 = nsl.pb2
     req = pb2.Request.DESCRIPTOR.fields_by_name
     assert req["network"].number == 2
@@ -210,7 +210,7 @@ async def test_battery_status_parses(nsl, api):
 
 
 async def test_battery_not_charging_when_field_absent(nsl, api):
-    """Device omits isCharging when unplugged -> we report not-charging, not unknown.
+    """Device omits isCharging when unplugged, so we report not-charging, not unknown.
 
     Also covers the un-plug transition: a prior charging=True must flip back to
     False when a later battery status arrives without the field.
@@ -272,7 +272,7 @@ async def test_firmware_version_parses(nsl, api):
 async def test_sound_list_is_sanitized(nsl, api):
     """Device-supplied track names are clamped + filtered before becoming options.
 
-    Track names arrive from the cloud/device as untrusted strings; the parser
+    Track names arrive from the cloud/device as untrusted strings. The parser
     drops blank/non-printable names and clamps length, then prepends "No sound".
     """
     pb2 = nsl.pb2
@@ -280,9 +280,9 @@ async def test_sound_list_is_sanitized(nsl, api):
         soundList=pb2.SoundList(
             tracks=[
                 "Pink Noise",  # valid
-                "x" * 200,  # overlong -> clamped to 64
-                "bad\x07bell",  # non-printable -> dropped
-                "   ",  # blank -> dropped
+                "x" * 200,  # overlong, clamped to 64
+                "bad\x07bell",  # non-printable, dropped
+                "   ",  # blank, dropped
             ]
         )
     )
@@ -308,7 +308,7 @@ def test_additive_v468_fields_are_ignored_not_errors(nsl, api):
     pb2 = nsl.pb2
     settings = pb2.Settings(isOn=True, brightness=1.0)
     raw = settings.SerializeToString()
-    # Append a bogus field at tag 12 (varint) — simulates a new app-only field.
+    # Append a bogus field at tag 12 (varint), simulating a new app-only field.
     raw += bytes([(12 << 3) | 0, 0x01])
     reparsed = pb2.Settings()
     reparsed.ParseFromString(raw)  # must not raise

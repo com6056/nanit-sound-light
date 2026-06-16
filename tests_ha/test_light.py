@@ -1,6 +1,6 @@
 """Light entity behavior that needs the real coordinator (coalesce + optimistic).
 
-The device-facing api is mocked; these assert what the light *commands*.
+The device-facing api is mocked. These assert what the light *commands*.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def _light(coordinator):
 
 
 async def test_light_off_dims_to_zero_keeping_power(hass, coordinator):
-    """Light OFF = brightness 0 (noColor doesn't darken the light); power/sound
+    """Light OFF = brightness 0 (noColor doesn't darken the light). Power/sound
     untouched so white noise keeps playing."""
     light = _light(coordinator)
     await light.async_turn_off()
@@ -28,12 +28,12 @@ async def test_light_off_dims_to_zero_keeping_power(hass, coordinator):
 
     coordinator.api.send_control_command.assert_awaited_once()
     _, kwargs = coordinator.api.send_control_command.call_args
-    assert kwargs == {"brightness": 0.0}  # only brightness; power/sound untouched
+    assert kwargs == {"brightness": 0.0}  # only brightness, power/sound untouched
 
 
 async def test_turn_on_restores_device_color_when_no_stored_color(hass, coordinator):
     """After a restart cleared _last_colors, turning the light on must still
-    clear no_color (using the device's retained hue/sat) — not be a no-op."""
+    clear no_color (using the device's retained hue/sat), not be a no-op."""
     # Device is off + light disabled (no_color) but still holds a hue/sat.
     coordinator.data["devices"]["baby1"].update(
         {"is_on": False, "no_color": True, "hue": 0.5, "saturation": 0.8}

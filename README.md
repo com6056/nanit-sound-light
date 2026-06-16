@@ -6,72 +6,106 @@
 
 [![hacs][hacsbadge]][hacs]
 
-_Control your Nanit Sound + Light devices directly from Home Assistant._
+Control your Nanit Sound + Light from Home Assistant: the light, the sound
+machine, power, and the device's sensors. It does not control Nanit cameras.
 
-**This integration focuses exclusively on Nanit Sound + Light devices** and provides control over lighting, sound, power, and environmental monitoring. (It does not control Nanit cameras.)
+## Disclaimer
+
+This is an unofficial, community-built integration. It is not affiliated with,
+authorized, maintained, sponsored, or endorsed by Nanit or any of its affiliates.
+"Nanit" and the Nanit logo are trademarks of their respective owner and are used
+here only to identify the hardware this project works with.
+
+The integration talks to the device using a protocol that was independently
+reverse-engineered for interoperability. It can break at any time if Nanit changes
+its apps, firmware, or services, and it comes with no warranty (see
+[LICENSE](LICENSE)). Use at your own risk.
 
 ## Features
 
-- 💡 **Light control** — brightness and color
-- 🔊 **Sound control** — volume and sound selection (the options available on your device)
-- ⚡ **Power control** — turn the device on and off
-- 🌡️ **Environmental sensors** — temperature and humidity
-- 🔄 **Real-time updates** — state changes pushed over a WebSocket, no polling lag
-- 🔐 **Secure authentication** — MFA supported, with automatic token refresh and a re-authentication prompt when needed
-- 🔁 **Resilient connection** — automatic reconnect with backoff so transient cloud/network drops recover on their own
+- **Local connection with automatic cloud fallback.** When Home Assistant and the
+  device are on the same network, control goes straight to the device over the LAN,
+  which is faster and more reliable than the cloud. If the device is not reachable
+  locally, it falls back to the Nanit cloud on its own. There is a toggle in the
+  integration's Configure screen (on by default).
+- **Light**: brightness and color.
+- **Sound**: volume and sound selection (whatever your device offers).
+- **Power**: turn the whole device on and off.
+- **Environment**: temperature and humidity.
+- **Device health**: battery level, charging status, WiFi signal strength (with
+  SSID, BSSID, and channel), firmware version, and which connection is currently in
+  use (local or cloud).
+- **Real-time updates** over a push WebSocket, so state changes show up without
+  polling lag.
+- **Secure sign-in**: MFA is supported, tokens refresh automatically, and Home
+  Assistant prompts you to re-authenticate if a session can no longer be renewed.
+  Your password is never written to disk.
 
 ## Installation
 
-### HACS (Recommended)
+### HACS (recommended)
 
-1. Ensure that [HACS](https://hacs.xyz/) is installed
-2. Add this repository as a custom repository:
-   - In HACS, go to "Integrations" → "..." → "Custom repositories"
-   - Repository: `https://github.com/com6056/nanit-sound-light`
-   - Category: Integration
-3. Click "Install" on the "Nanit Sound + Light" integration
-4. Restart Home Assistant
-5. In the Home Assistant UI, go to "Settings" → "Devices & Services" → "Add Integration" → "Nanit Sound + Light"
+1. Make sure [HACS](https://hacs.xyz/) is installed.
+2. Add this repository as a custom repository (HACS, the three-dot menu, Custom
+   repositories): `https://github.com/com6056/nanit-sound-light`, category
+   Integration.
+3. Install "Nanit Sound + Light".
+4. Restart Home Assistant.
+5. Go to Settings, Devices & Services, Add Integration, and search for "Nanit
+   Sound + Light".
 
-### Manual Installation
+### Manual
 
-1. Using the tool of choice, open the directory (folder) for your HA configuration (where you find `configuration.yaml`)
-2. If you do not have a `custom_components` directory there, create it
-3. In the `custom_components` directory create a new folder called `nanit_sound_light`
-4. Download _all_ the files from the `custom_components/nanit_sound_light/` directory in this repository
-5. Place the files you downloaded in the new directory you created
-6. Restart Home Assistant
-7. In the Home Assistant UI, go to "Settings" → "Devices & Services" → "Add Integration" → "Nanit Sound + Light"
+1. Copy `custom_components/nanit_sound_light/` into your Home Assistant
+   `config/custom_components/` directory.
+2. Restart Home Assistant.
+3. Add the integration from Settings, Devices & Services as above.
 
 ## Configuration
 
-The integration guides you through setup:
+Setup walks you through it:
 
-1. **Account credentials** — enter your Nanit email and password
-2. **MFA (if enabled)** — enter the verification code Nanit emails you
-3. **Device discovery** — your Sound + Light devices are discovered automatically
+1. Enter your Nanit email and password.
+2. If your account uses MFA, enter the code Nanit emails you.
+3. Your Sound + Light devices are discovered automatically.
 
-The same Nanit account can only be added once. If your saved session can no longer be refreshed, Home Assistant prompts you to re-enter your password (and MFA, if required) — no need to delete and re-add the integration.
+A Nanit account can only be added once. If a saved session can no longer be
+refreshed, Home Assistant asks for your password again (and MFA if needed) rather
+than making you delete and re-add the integration.
 
-## Supported Entities
+After setup, the integration's Configure button has one option, "Use local (LAN)
+connection when available." It is on by default and falls back to the cloud
+automatically, so most people can leave it alone. Turn it off if your network
+cannot resolve the device locally and you would rather skip the local attempt.
 
-Each Sound + Light device is exposed as several entities:
+## Entities
 
-| Entity Type | Description                                   |
-| ----------- | --------------------------------------------- |
-| **Light**   | Brightness (0–100%) and color (HS)            |
-| **Switch**  | Device power on/off                           |
-| **Number**  | Volume (0–100%)                               |
-| **Select**  | Sound selection (the device's available list) |
-| **Sensor**  | Temperature and humidity                      |
+Each device shows up with these entities:
 
-Entities go **unavailable** when the device can't be reached, rather than showing the last-known values as if they were live.
+| Entity        | Name            | What it does                                                    |
+| ------------- | --------------- | --------------------------------------------------------------- |
+| Light         | (device name)   | Brightness and color (HS)                                       |
+| Switch        | Power           | Whole-device power                                              |
+| Number        | Volume          | Volume, 0 to 100%                                               |
+| Select        | Sound           | Sound selection from the device's list                          |
+| Sensor        | Temperature     | Ambient temperature                                             |
+| Sensor        | Humidity        | Ambient humidity                                                |
+| Sensor        | Battery         | Battery charge level (coarse)                                   |
+| Binary sensor | Charging        | Whether the device is charging                                  |
+| Sensor        | Signal strength | WiFi RSSI, with SSID/BSSID/channel (diagnostic, off by default) |
+| Sensor        | Firmware        | Installed firmware version (diagnostic)                         |
+| Sensor        | Connection type | Local or Cloud, the transport currently in use (diagnostic)     |
+
+Turning the light off dims it to zero while leaving the device powered, so white
+noise keeps playing. The Power switch controls the whole device.
+
+Entities go unavailable when the device cannot be reached, instead of showing the
+last-known values as if they were live.
 
 ## Troubleshooting
 
-### Debug Logging
-
-If you encounter issues, enable debug logging by adding this to your `configuration.yaml`:
+To capture logs for a problem, add this to `configuration.yaml`, restart, and
+reproduce the issue:
 
 ```yaml
 logger:
@@ -79,35 +113,39 @@ logger:
     custom_components.nanit_sound_light: debug
 ```
 
-Then restart Home Assistant and check **Settings** → **System** → **Logs**.
+Remove it once you have what you need. Debug logging is verbose and is not meant
+to be left on.
 
-### Common Issues
+| Problem               | What to try                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Authentication failed | Re-enter your password when Home Assistant prompts for reauth.                                                           |
+| Invalid MFA code      | Use the latest code from your email (not SMS).                                                                           |
+| No devices found      | Confirm the device is paired and online in the Nanit app.                                                                |
+| Entity unavailable    | Usually a brief network drop. It reconnects on its own.                                                                  |
+| Stuck on cloud        | The local path needs HA and the device on the same network with mDNS working. It always works over the cloud regardless. |
 
-| Issue                 | Solution                                                         |
-| --------------------- | ---------------------------------------------------------------- |
-| Authentication failed | Re-enter your password when Home Assistant prompts for reauth    |
-| Invalid MFA code      | Use the latest verification code from your email (not SMS)       |
-| No devices found      | Ensure the device is paired and online in the Nanit app          |
-| Entity unavailable    | Usually a transient cloud/network drop; it reconnects on its own |
+When filing an issue, include debug logs, your Home Assistant version, and the
+steps to reproduce.
 
-### Getting Help
+## Contributing
 
-When reporting issues, please include:
+Pull requests and issues are welcome. The test suites run in throwaway containers
+and never touch a real device:
 
-- Debug logs showing the error
-- Home Assistant version
-- Steps to reproduce the issue
-
-## Contributions
-
-Contributions are welcome! Please open an issue or submit a Pull Request. Run the test suites with `./tests/run.sh` and `./tests_ha/run.sh` (both run in a throwaway container and never touch a real device).
+```bash
+./tests/run.sh        # offline api tests
+./tests_ha/run.sh     # Home Assistant fixture tests
+./ci.sh               # ruff, prettier, protobuf check, hassfest
+```
 
 ## Credits
 
-- **Original Nanit integration**: [@indiefan](https://github.com/indiefan) — [home_assistant_nanit](https://github.com/indiefan/home_assistant_nanit)
-- **Sound + Light protocol**: independently reverse-engineered for interoperability
+- Original Nanit integration by [@indiefan](https://github.com/indiefan):
+  [home_assistant_nanit](https://github.com/indiefan/home_assistant_nanit).
+- The Sound + Light protocol was reverse-engineered separately for this project.
 
-This integration builds on the foundational work of the original Nanit integration while focusing specifically on Sound + Light devices.
+This builds on the original integration's groundwork while focusing on the Sound +
+Light rather than the cameras.
 
 ---
 

@@ -12,7 +12,7 @@ ignore = [
     "E501",  # Line too long (handled by formatter)
     "N806",  # Variable in function should be lowercase (protobuf generates uppercase)
     "N803",  # Argument name should be lowercase (protobuf compatibility)
-    "B904",  # Exception chaining - would require larger changes
+    "B904",  # Exception chaining (would require larger changes)
 ]
 
 # Exclude generated protobuf files from linting and formatting
@@ -20,7 +20,7 @@ exclude = [
     "custom_components/nanit_sound_light/sound_light_pb2.py"
 ]
 
-# scripts/ are manual dev tools run from a terminal — print() is their output.
+# scripts/ are manual dev tools run from a terminal; print() is their output.
 [lint.per-file-ignores]
 "scripts/*" = ["T20"]
 

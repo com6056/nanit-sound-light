@@ -68,9 +68,7 @@ class NanitSoundLightTemperatureSensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the temperature sensor."""
-        super().__init__(
-            coordinator, device_uid, device_data, "temperature", "mdi:thermometer"
-        )
+        super().__init__(coordinator, device_uid, device_data, "temperature")
 
         # Temperature sensor attributes
         self._attr_device_class = SensorDeviceClass.TEMPERATURE
@@ -94,9 +92,7 @@ class NanitSoundLightHumiditySensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the humidity sensor."""
-        super().__init__(
-            coordinator, device_uid, device_data, "humidity", "mdi:water-percent"
-        )
+        super().__init__(coordinator, device_uid, device_data, "humidity")
 
         # Humidity sensor attributes
         self._attr_device_class = SensorDeviceClass.HUMIDITY
@@ -121,7 +117,7 @@ class NanitSoundLightBatterySensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the battery sensor."""
-        super().__init__(coordinator, device_uid, device_data, "battery", "mdi:battery")
+        super().__init__(coordinator, device_uid, device_data, "battery")
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -133,7 +129,7 @@ class NanitSoundLightBatterySensor(NanitSoundLightEntity, SensorEntity):
 
 
 class NanitSoundLightWifiSensor(NanitSoundLightEntity, SensorEntity):
-    """WiFi signal-strength sensor (diagnostic); SSID/BSSID/channel as attrs."""
+    """WiFi signal-strength sensor (diagnostic), SSID/BSSID/channel as attrs."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_entity_registry_enabled_default = False
@@ -145,17 +141,9 @@ class NanitSoundLightWifiSensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the WiFi sensor."""
-        # unique_id stays "…_wifi" (stable). Title-cased "Signal Strength" to
-        # match the other hand-built names on this device (Temperature, Humidity,
-        # Battery, Firmware) rather than mixing in a lone lowercase word.
-        super().__init__(
-            coordinator,
-            device_uid,
-            device_data,
-            "wifi",
-            "mdi:wifi",
-            display_name="Signal Strength",
-        )
+        # unique_id stays "..._wifi" (stable). name is left as the device-class
+        # default ("Signal strength") via has_entity_name.
+        super().__init__(coordinator, device_uid, device_data, "wifi")
         self._attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
         self._attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -179,15 +167,15 @@ class NanitSoundLightWifiSensor(NanitSoundLightEntity, SensorEntity):
 class NanitSoundLightConnectionTypeSensor(NanitSoundLightEntity, SensorEntity):
     """Which transport the device is reached over: local (LAN) or cloud (relay).
 
-    A diagnostic enum sensor — the device runs both a local and a cloud socket and
+    A diagnostic enum sensor: the device runs both a local and a cloud socket and
     sends prefer local, so this reflects what's actually carrying traffic.
     """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.ENUM
-    # State values are lowercase machine strings (stable for automations/history);
-    # the UI shows "Local"/"Cloud" via the translation_key state translations in
-    # strings.json — the HA convention for enum sensors.
+    # State values are lowercase machine strings (stable for automations/history).
+    # The UI shows "Local"/"Cloud" via the translation_key state translations in
+    # strings.json, the HA convention for enum sensors.
     _attr_options = ["local", "cloud"]
     _attr_translation_key = "connection_type"
 
@@ -198,13 +186,13 @@ class NanitSoundLightConnectionTypeSensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the connection-type sensor."""
+        # Name comes from the connection_type translation_key.
         super().__init__(
             coordinator,
             device_uid,
             device_data,
             "connection_type",
             "mdi:transit-connection-variant",
-            display_name="Connection Type",
         )
 
     @property
@@ -232,7 +220,14 @@ class NanitSoundLightFirmwareSensor(NanitSoundLightEntity, SensorEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the firmware sensor."""
-        super().__init__(coordinator, device_uid, device_data, "firmware", "mdi:chip")
+        super().__init__(
+            coordinator,
+            device_uid,
+            device_data,
+            "firmware",
+            "mdi:chip",
+            name="Firmware",
+        )
 
     @property
     def native_value(self) -> str | None:

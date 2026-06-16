@@ -4,8 +4,8 @@ These exercise the local socket path the integration prefers over the cloud
 relay: the deterministic mDNS URL, the trust-all TLS context, the per-device
 token fetch, and the prefer-local / fall-back-to-remote send routing. As with
 the reconnect tests they run the real client against in-process fake servers on
-127.0.0.1 (plaintext ws://) — never a real device or the Nanit cloud (the
-``block_nanit_network`` guard would fail the test if it tried).
+127.0.0.1 (plaintext ws://), never a real device or the Nanit cloud (the
+`block_nanit_network` guard would fail the test if it tried).
 """
 
 from __future__ import annotations
@@ -274,7 +274,7 @@ async def test_falls_back_to_remote_when_local_down(nsl, monkeypatch):
     await _wait_until(lambda: api._transport_connected(_local_key(api)))
     await _wait_until(lambda: api._transport_connected(_remote_key(api)))
 
-    # Local server goes away entirely; the client should route sends to remote.
+    # Local server goes away entirely, so the client should route sends to remote.
     await local.stop()
     await _wait_until(lambda: not api._transport_connected(_local_key(api)))
 
@@ -305,7 +305,7 @@ async def test_device_still_available_while_one_transport_down(nsl, monkeypatch)
 
 async def test_local_disabled_connects_remote_only(nsl, monkeypatch):
     api, local, remote = await _connect_both(nsl, monkeypatch, local_enabled=False)
-    # If local were attempted this would raise; with local disabled it must not be.
+    # If local were attempted this would raise. With local disabled it must not be.
     monkeypatch.setattr(
         api,
         "_local_ws_url",

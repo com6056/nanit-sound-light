@@ -2,7 +2,7 @@
 
 Regression guard for the startup-auth bug: after we stopped persisting the
 password, a fresh start carries only the stored refresh token (no access token,
-no credentials). ensure_authenticated must use that refresh token — earlier its
+no credentials). ensure_authenticated must use that refresh token. Earlier its
 refresh branch was gated on an existing access token, so startup never refreshed
 and the entry got stuck on "Authentication temporarily unavailable".
 """
@@ -28,7 +28,7 @@ async def test_ensure_authenticated_bootstraps_from_refresh_token(nsl):
 
     assert await api.ensure_authenticated() is True
     assert calls["refresh"] == 1
-    # And this is NOT a reauth situation — we have a working token now.
+    # And this is NOT a reauth situation. We have a working token now.
     assert api.needs_reauth() is False
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual live test harness — drive the real api against a real device, no HA.
+"""Manual live test harness: drive the real api against a real device, no HA.
 
 A fast way to validate api.py changes against an actual Sound + Light without a
 full Home Assistant deploy. It loads the integration's api/const/protobuf as a
@@ -11,12 +11,12 @@ gentle light off→on demo (no volume/sound changes).
 
 Environment:
   NANIT_REFRESH_TOKEN   Nanit refresh token (preferred). OR:
-  NANIT_EMAIL / NANIT_PASSWORD   account login (no MFA support — use a refresh
+  NANIT_EMAIL / NANIT_PASSWORD   account login (no MFA support, use a refresh
                                  token if your account has MFA enabled).
   NANIT_DEVICE_IP       optional. The speaker's LAN IP (e.g. 192.168.1.50). If
-                        set, used directly for the local socket; otherwise the
+                        set, used directly for the local socket. Otherwise the
                         local path relies on the OS resolving "Nanit-<uid>.local"
-                        (works on hosts with mDNS/nss-mdns; HA itself resolves it
+                        (works on hosts with mDNS/nss-mdns, HA itself resolves it
                         via its bundled zeroconf instead).
   NANIT_SEND_TEST       set to "1" to run the gentle light demo.
 
@@ -72,7 +72,7 @@ async def _authenticate(api) -> None:
         await api.authenticate(email, password)
     if not await api.ensure_authenticated():
         raise SystemExit(
-            "auth failed — set NANIT_REFRESH_TOKEN (or NANIT_EMAIL/NANIT_PASSWORD)"
+            "auth failed: set NANIT_REFRESH_TOKEN (or NANIT_EMAIL/NANIT_PASSWORD)"
         )
 
 

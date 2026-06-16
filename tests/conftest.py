@@ -10,8 +10,8 @@ Two hard rules these fixtures enforce:
 2. **No Home Assistant import for the lean layers.** `api.py` depends only on
    aiohttp / websockets / protobuf, so we load it (plus `const` and
    `sound_light_pb2`) as a synthetic package and skip the real package
-   ``__init__.py`` (which imports Home Assistant). Coordinator/entity tests that
-   genuinely need ``hass`` should use ``pytest-homeassistant-custom-component``.
+   `__init__.py` (which imports Home Assistant). Coordinator/entity tests that
+   genuinely need `hass` should use `pytest-homeassistant-custom-component`.
 """
 
 from __future__ import annotations

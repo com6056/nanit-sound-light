@@ -1,13 +1,13 @@
 """WebSocket reconnect / liveness tests for the flakiness fix (Bug A).
 
 These run the real client against an in-process fake Nanit server on
-127.0.0.1 (plaintext ws://, which is why ``connect_device`` only builds a TLS
-context for wss://). No real device, no Nanit cloud — the ``block_nanit_network``
+127.0.0.1 (plaintext ws://, which is why `connect_device` only builds a TLS
+context for wss://). No real device, no Nanit cloud. The `block_nanit_network`
 guard would fail the test if it tried.
 
 Covered:
-* the reconnect backoff schedule matches the official app (0/2/5/7);
-* a control command actually reaches the socket;
+* the reconnect backoff schedule matches the official app (0/2/5/7),
+* a control command actually reaches the socket,
 * when the server drops the connection, the client reconnects on its own
   instead of waiting for the next 30s poll.
 """
@@ -34,11 +34,11 @@ class _FakeNanit:
     """Minimal ws server that records frames and tracks live connections.
 
     Behaves like the real relay enough to exercise the protocol rework:
-    * on connect it sends a ``Message{backend{device{status: Connected}}}``
-      frame (the readiness gate the client now waits for before sending);
-    * for each control ``Request{settings}`` it replies with a
-      ``Response{requestId, statusCode: 200}`` so the client's await-ack
-      transaction completes (set ``status_code`` to simulate a rejection).
+    * on connect it sends a `Message{backend{device{status: Connected}}}`
+      frame (the readiness gate the client now waits for before sending),
+    * for each control `Request{settings}` it replies with a
+      `Response{requestId, statusCode: 200}` so the client's await-ack
+      transaction completes (set `status_code` to simulate a rejection).
     """
 
     def __init__(self, pb2, *, status_code: int = 200, send_backend: bool = True):
@@ -73,7 +73,7 @@ class _FakeNanit:
     async def _maybe_ack(self, ws, raw: bytes) -> None:
         """Ack any request the way the device does (Response by requestId).
 
-        Echoes settings back on a control request; for query requests
+        Echoes settings back on a control request. For query requests
         (getSettings/getStatus/network/firmware) just returns the status code so
         the client's await resolves promptly.
         """
@@ -146,7 +146,7 @@ async def test_reconnects_after_server_drop(nsl, fake_nanit):
     await _wait_until(lambda: len(fake_nanit.connections) == 1)
     assert api.is_websocket_connected("baby123")
 
-    # Server drops the connection — the client should reconnect on its own.
+    # Server drops the connection, so the client should reconnect on its own.
     await fake_nanit.connections[0].close()
 
     await _wait_until(lambda: len(fake_nanit.connections) == 2)
@@ -262,9 +262,9 @@ async def test_control_command_rejection_raises(nsl, monkeypatch):
 async def test_slow_ack_is_accepted_without_resend(nsl, monkeypatch):
     """A slow/absent ack on a LIVE socket does NOT raise and does NOT re-send.
 
-    The device is busy, not gone — re-sending piles duplicates onto an already
-    overloaded device (which wedges it). The command is accepted optimistically;
-    exactly one control frame reaches the wire.
+    The device is busy, not gone. Re-sending piles duplicates onto an already
+    overloaded device (which wedges it). The command is accepted optimistically,
+    and exactly one control frame reaches the wire.
     """
     monkeypatch.setattr(nsl.api, "COMMAND_ACK_TIMEOUT", 0.3)
     # Server attaches (so the gate passes) but never acks a control request.
@@ -279,7 +279,7 @@ async def test_slow_ack_is_accepted_without_resend(nsl, monkeypatch):
     # Returns without raising despite the missing ack.
     await api.send_control_command("baby123", is_on=True)
 
-    # Exactly one control frame on the wire — no duplicate re-send.
+    # Exactly one control frame on the wire, no duplicate re-send.
     controls = 0
     for raw in server.received:
         msg = nsl.pb2.Message()

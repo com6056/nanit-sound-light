@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-commit gate:
-#   (1) leak scan — block commits containing private terms (see leak-scan.sh).
-#   (2) ruff — auto-fix what it can (format + safe --fix), RE-STAGE those fixes
+#   (1) leak scan: block commits containing private terms (see leak-scan.sh).
+#   (2) ruff: auto-fix what it can (format + safe --fix), RE-STAGE those fixes
 #       into the commit, then block only on issues ruff can't fix. This is what
 #       CI enforces, so a lint error can't slip into a push (it has, twice).
 # Runs ruff in a throwaway container (no ruff installed locally). Bypass lint
@@ -26,14 +26,14 @@ elif command -v docker >/dev/null 2>&1; then
     runner=docker
 fi
 if [ -z "$runner" ]; then
-    echo "pre-commit: no podman/docker — skipping ruff (GitHub CI still checks)." >&2
+    echo "pre-commit: no podman/docker, skipping ruff (GitHub CI still checks)." >&2
     exit 0
 fi
 
 img=docker.io/library/python:3.13-slim
 dirs="custom_components tests tests_ha"
 
-# Auto-fix in place, then verify — all in one container run (fixes land in the
+# Auto-fix in place, then verify, all in one container run (fixes land in the
 # working tree; the trailing format-check + check is the verification).
 out="$("$runner" run --rm -v "$root":/app:z -w /app "$img" bash -lc "
     pip install -q ruff >/dev/null 2>&1
@@ -56,7 +56,7 @@ done
 if [ "$status" -ne 0 ]; then
     echo "$out" | grep -vE "WARNING: Running pip|pip install|notice|already satisfied" >&2
     echo "" >&2
-    echo "pre-commit: BLOCKED — ruff issues remain that it can't auto-fix. Fix them, or 'LINT_SKIP=1 git commit' to override." >&2
+    echo "pre-commit: BLOCKED. ruff issues remain that it can't auto-fix. Fix them, or 'LINT_SKIP=1 git commit' to override." >&2
     exit 1
 fi
 exit 0
