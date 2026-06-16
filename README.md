@@ -88,7 +88,7 @@ Each device shows up with these entities:
 
 | Entity        | Name            | What it does                                                    |
 | ------------- | --------------- | --------------------------------------------------------------- |
-| Light         | (device name)   | Brightness and color (HS)                                       |
+| Light         | Light           | Brightness and color (HS)                                       |
 | Switch        | Power           | Whole-device power                                              |
 | Number        | Volume          | Volume, 0 to 100%                                               |
 | Select        | Sound           | Sound selection from the device's list                          |
