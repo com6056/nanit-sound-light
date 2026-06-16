@@ -10,6 +10,7 @@ the reconnect tests they run the real client against in-process fake servers on
 
 from __future__ import annotations
 
+import asyncio
 import ssl
 
 import pytest
@@ -280,6 +281,41 @@ async def test_falls_back_to_remote_when_local_down(nsl, monkeypatch):
 
     await api.send_control_command("baby123", is_on=False)
     assert _has_control(nsl, remote, isOn=False)
+
+    await api.close()
+    await remote.stop()
+
+
+async def test_resends_on_surviving_transport_when_inflight_socket_drops(
+    nsl, monkeypatch
+):
+    """A command whose socket drops mid-flight re-sends on the other transport.
+
+    Covers the redundant-drop re-send path in _transact. The reconnect suite's
+    drop test does not exercise it because that test runs with reconnects disabled
+    and no surviving transport, so the command there is meant to fail. Here both
+    transports are up, the in-flight (local) socket dies, and the command must
+    land on remote and succeed without a rollback.
+    """
+    api, local, remote = await _connect_both(nsl, monkeypatch)
+
+    await api.connect_device(DEVICE)
+    await _wait_until(lambda: api._transport_connected(_local_key(api)))
+    await _wait_until(lambda: api._transport_connected(_remote_key(api)))
+
+    # Local is preferred. Let it accept the send but never ack, so the command
+    # sits in flight on local while remote keeps acking normally.
+    local._maybe_ack = lambda *_a, **_k: asyncio.sleep(0)
+
+    send = asyncio.ensure_future(api.send_control_command("baby123", is_on=True))
+    await _wait_until(lambda: api._inflight_conn_key.get("baby123") == _local_key(api))
+
+    # Drop the local socket mid-flight while remote stays up.
+    await local.stop()
+
+    # The command re-sends on remote and returns without raising (no rollback).
+    await asyncio.wait_for(send, timeout=5)
+    assert _has_control(nsl, remote, isOn=True)
 
     await api.close()
     await remote.stop()
