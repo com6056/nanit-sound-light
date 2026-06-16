@@ -26,7 +26,7 @@ custom_components/nanit_sound_light/
   entity.py       # CoordinatorEntity base
   switch.py       # power            light.py   # brightness + color
   select.py       # sound track      number.py  # volume
-  sensor.py       # temp, humidity, battery %, wifi RSSI, firmware version
+  sensor.py       # temp, humidity, battery %, wifi RSSI, firmware, connection type
   binary_sensor.py # battery charging
   config_flow.py  # auth + MFA + reauth
   sound_light.proto / sound_light_pb2.py   # wire schema (regenerate via ci.sh)
@@ -82,7 +82,17 @@ fix two real, recurring failures — don't revert these without understanding wh
   for the reason above). (The `requestId` correlation is real — distinct from the
   pin-guard's id, which stays logging-only. All requests use unique ids via
   `_next_message_id`, starting at 1 like the app's `AtomicInteger`; `sessionId` is a
-  random per-connection token.)
+  random per-connection token.) Validated on-device 2026-06-15: a 20-command
+  hammer acked sub-2s with zero duplicates/stalls.
+- **mDNS resolver needs the `zeroconf` dependency.** The coordinator imports
+  `homeassistant.components.zeroconf` to resolve the device's `.local` address, so
+  the manifest declares `after_dependencies: ["zeroconf"]` (hassfest fails
+  otherwise). It's `after_` (not a hard dep) because local is best-effort — a
+  cloud-only user doesn't need it.
+- **Connection Type sensor.** A diagnostic enum sensor (`local`/`cloud`) reflecting
+  `api.active_transport()` — what's actually carrying sends right now. Backed by
+  `_active_connection_key` (local preferred). Unavailable when the device is
+  unreachable (base entity gates on `is_websocket_connected`).
 - **Command coalescing.** A scene toggles power + sound + volume + light at once.
   Sent as separate protobuf messages they race, and out-of-order responses make
   the device end up in the wrong state (classic symptom: a "turn on" scene leaves
@@ -208,6 +218,13 @@ generated protobuf module and would double-register its descriptors otherwise.
 
 CI (`.github/workflows/ci.yml`) runs ruff + prettier + protobuf-drift check +
 hassfest + HACS validation + both pytest jobs. Regenerate the protobuf with `ci.sh`.
+
+`scripts/live_test.py` is a manual harness for testing api.py changes against a
+**real device** without a HA deploy (loads the api standalone, auths, connects
+local + cloud, prints status/state). Safe by default (read-only); set
+`NANIT_SEND_TEST=1` for a gentle light demo. Creds via env
+(`NANIT_REFRESH_TOKEN` or `NANIT_EMAIL`/`NANIT_PASSWORD`), optional
+`NANIT_DEVICE_IP`. Not part of CI — it needs real creds + device.
 
 ## Release-polish status
 

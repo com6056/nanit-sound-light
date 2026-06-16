@@ -77,6 +77,21 @@ def test_active_key_prefers_local_then_remote(nsl):
     assert api._active_connection_key("baby123") == _local_key(api)
 
 
+def test_active_transport_maps_local_and_cloud(nsl):
+    """active_transport() exposes 'local'/'cloud'/None for the connection sensor."""
+    api = nsl.api.SoundLightAPI(session=None)
+    assert api.active_transport("baby123") is None
+
+    class _Open:
+        state = None
+
+    api._is_websocket_closed = lambda ws: ws is None
+    api._websockets[_remote_key(api)] = _Open()
+    assert api.active_transport("baby123") == "cloud"  # remote transport -> "cloud"
+    api._websockets[_local_key(api)] = _Open()
+    assert api.active_transport("baby123") == "local"  # local preferred
+
+
 # ---------------------------------------------------------------------------
 # Device-token fetch (fake aiohttp session)
 # ---------------------------------------------------------------------------

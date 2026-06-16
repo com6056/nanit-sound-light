@@ -1,6 +1,7 @@
 {
   "domain": "nanit_sound_light",
   "name": "Nanit Sound + Light",
+  "after_dependencies": ["zeroconf"],
   "codeowners": ["@com6056"],
   "config_flow": true,
   "dependencies": [],

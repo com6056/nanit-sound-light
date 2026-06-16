@@ -938,6 +938,18 @@ class SoundLightAPI:
                 return key
         return None
 
+    def active_transport(self, baby_uid: str) -> str | None:
+        """User-facing label for the transport sends currently route over.
+
+        ``"local"`` (direct LAN), ``"cloud"`` (the relay), or ``None`` when the
+        device is unreachable. Backs the Connection Type diagnostic sensor.
+        """
+        key = self._active_connection_key(baby_uid)
+        if key is None:
+            return None
+        _baby, transport = self._split_conn_key(key)
+        return "local" if transport == TRANSPORT_LOCAL else "cloud"
+
     async def _connect_transport(
         self, device_info: dict[str, Any], transport: str
     ) -> None:

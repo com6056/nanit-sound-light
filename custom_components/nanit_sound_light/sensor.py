@@ -47,10 +47,13 @@ async def async_setup_entry(
         # Add humidity sensor
         entities.append(NanitSoundLightHumiditySensor(coordinator, device_uid, device))
 
-        # Diagnostics: battery %, WiFi signal, firmware version.
+        # Diagnostics: battery %, WiFi signal, firmware version, connection type.
         entities.append(NanitSoundLightBatterySensor(coordinator, device_uid, device))
         entities.append(NanitSoundLightWifiSensor(coordinator, device_uid, device))
         entities.append(NanitSoundLightFirmwareSensor(coordinator, device_uid, device))
+        entities.append(
+            NanitSoundLightConnectionTypeSensor(coordinator, device_uid, device)
+        )
 
     async_add_entities(entities)
 
@@ -171,6 +174,46 @@ class NanitSoundLightWifiSensor(NanitSoundLightEntity, SensorEntity):
             "bssid": device_data.get("wifi_bssid"),
             "channel": device_data.get("wifi_channel"),
         }
+
+
+class NanitSoundLightConnectionTypeSensor(NanitSoundLightEntity, SensorEntity):
+    """Which transport the device is reached over: local (LAN) or cloud (relay).
+
+    A diagnostic enum sensor — the device runs both a local and a cloud socket and
+    sends prefer local, so this reflects what's actually carrying traffic.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["local", "cloud"]
+
+    def __init__(
+        self,
+        coordinator: NanitSoundLightCoordinator,
+        device_uid: str,
+        device_data: dict[str, Any],
+    ) -> None:
+        """Initialize the connection-type sensor."""
+        super().__init__(
+            coordinator,
+            device_uid,
+            device_data,
+            "connection_type",
+            "mdi:transit-connection-variant",
+            display_name="Connection Type",
+        )
+
+    @property
+    def icon(self) -> str:
+        """Reflect the active transport with a fitting icon."""
+        return (
+            "mdi:lan-connect" if self.native_value == "local" else "mdi:cloud-outline"
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        """Return 'local', 'cloud', or None when unreachable."""
+        return self.coordinator.api.active_transport(self._device_uid)
 
 
 class NanitSoundLightFirmwareSensor(NanitSoundLightEntity, SensorEntity):

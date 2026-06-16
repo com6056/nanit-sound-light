@@ -20,6 +20,10 @@ exclude = [
     "custom_components/nanit_sound_light/sound_light_pb2.py"
 ]
 
+# scripts/ are manual dev tools run from a terminal — print() is their output.
+[lint.per-file-ignores]
+"scripts/*" = ["T20"]
+
 [format]
 # Exclude generated protobuf files from formatting
 exclude = [
