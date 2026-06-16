@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # Pre-commit gate:
 #   (1) leak scan: block commits containing private terms (see leak-scan.sh).
-#   (2) ruff: auto-fix what it can (format + safe --fix), RE-STAGE those fixes
-#       into the commit, then block only on issues ruff can't fix. This is what
-#       CI enforces, so a lint error can't slip into a push (it has, twice).
-# Runs ruff in a throwaway container (no ruff installed locally). Bypass lint
-# with LINT_SKIP=1; skips with a warning if no
-# container runtime. --force-exclude keeps the generated *_pb2.py untouched (CI
-# requires it byte-identical to protoc output).
+#   (2) ruff (Python) and prettier (json/md/yml): auto-fix what they can and
+#       RE-STAGE the fixes into the commit, then block only on what can't be
+#       fixed. This mirrors what CI enforces, so a lint or format error can't slip
+#       into a push (both have, before this hook covered them).
+# Both run in throwaway containers (nothing installed locally). Bypass with
+# LINT_SKIP=1, or skip with a warning when there's no container runtime.
+# --force-exclude keeps the generated *_pb2.py untouched (CI requires it
+# byte-identical to protoc output).
 set -uo pipefail
 root="$(git rev-parse --show-toplevel)"
 
 # (1) Leak scan.
 "$root/.githooks/leak-scan.sh" || exit 1
 
-# (2) Lint auto-fix + verify.
 [ "${LINT_SKIP:-}" = "1" ] && exit 0
+
 mapfile -t staged_py < <(git diff --cached --name-only --diff-filter=ACM -- '*.py')
-[ "${#staged_py[@]}" -eq 0 ] && exit 0   # nothing Python staged
+mapfile -t staged_fmt < <(
+    git diff --cached --name-only --diff-filter=ACM -- '*.json' '*.md' '*.yml'
+)
+[ "${#staged_py[@]}" -eq 0 ] && [ "${#staged_fmt[@]}" -eq 0 ] && exit 0
 
 runner=""
 if command -v podman >/dev/null 2>&1; then
@@ -26,37 +30,53 @@ elif command -v docker >/dev/null 2>&1; then
     runner=docker
 fi
 if [ -z "$runner" ]; then
-    echo "pre-commit: no podman/docker, skipping ruff (GitHub CI still checks)." >&2
+    echo "pre-commit: no podman/docker, skipping lint/format (GitHub CI still checks)." >&2
     exit 0
 fi
 
-img=docker.io/library/python:3.13-slim
-dirs="custom_components tests tests_ha"
+status=0
 
-# Auto-fix in place, then verify, all in one container run (fixes land in the
-# working tree; the trailing format-check + check is the verification).
-out="$("$runner" run --rm -v "$root":/app:z -w /app "$img" bash -lc "
-    pip install -q ruff >/dev/null 2>&1
-    ruff format --no-cache --force-exclude $dirs >/dev/null 2>&1
-    ruff check --fix --no-cache --force-exclude $dirs >/dev/null 2>&1
-    ruff format --check --no-cache --force-exclude $dirs && ruff check --no-cache --force-exclude $dirs
-" 2>&1)"
-status=$?
+# (2a) ruff: auto-fix in place, then verify, in one container run.
+if [ "${#staged_py[@]}" -gt 0 ]; then
+    dirs="custom_components tests tests_ha"
+    out="$("$runner" run --rm -v "$root":/app:z -w /app docker.io/library/python:3.13-slim bash -lc "
+        pip install -q ruff >/dev/null 2>&1
+        ruff format --no-cache --force-exclude $dirs >/dev/null 2>&1
+        ruff check --fix --no-cache --force-exclude $dirs >/dev/null 2>&1
+        ruff format --check --no-cache --force-exclude $dirs && ruff check --no-cache --force-exclude $dirs
+    " 2>&1)"
+    if [ $? -ne 0 ]; then
+        echo "$out" | grep -vE "WARNING: Running pip|pip install|notice|already satisfied" >&2
+        echo "pre-commit: BLOCKED. ruff issues remain that it can't auto-fix." >&2
+        status=1
+    fi
+fi
 
-# Re-stage the originally-staged .py files the fixers rewrote.
+# (2b) prettier: format the staged json/md/yml files in place. prettier always
+# rewrites to its style, so there's nothing to "fail" except a parse error, which
+# is worth blocking on.
+if [ "${#staged_fmt[@]}" -gt 0 ]; then
+    if ! "$runner" run --rm -v "$root":/app:z -w /app docker.io/library/node:20-slim \
+        bash -lc "npx --yes prettier@3 --write ${staged_fmt[*]}" >/dev/null 2>&1; then
+        echo "pre-commit: BLOCKED. prettier couldn't parse a staged json/md/yml file." >&2
+        status=1
+    fi
+fi
+
+# Re-stage any originally-staged files the fixers rewrote.
 restaged=0
-for f in "${staged_py[@]}"; do
+for f in "${staged_py[@]}" "${staged_fmt[@]}"; do
+    [ -n "$f" ] || continue
     if ! git diff --quiet -- "$f" 2>/dev/null; then
         git add -- "$f"
         restaged=1
     fi
 done
-[ "$restaged" = 1 ] && echo "pre-commit: ruff auto-fixed + re-staged file(s)." >&2
+[ "$restaged" = 1 ] && echo "pre-commit: auto-fixed + re-staged file(s)." >&2
 
 if [ "$status" -ne 0 ]; then
-    echo "$out" | grep -vE "WARNING: Running pip|pip install|notice|already satisfied" >&2
     echo "" >&2
-    echo "pre-commit: BLOCKED. ruff issues remain that it can't auto-fix. Fix them, or 'LINT_SKIP=1 git commit' to override." >&2
+    echo "Fix the issues above, or 'LINT_SKIP=1 git commit' to override." >&2
     exit 1
 fi
 exit 0
