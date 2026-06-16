@@ -61,20 +61,28 @@ fix two real, recurring failures — don't revert these without understanding wh
   gates sends, and entity `available` requires it. A command still falls back to a
   best-effort send if the frame never arrives (a missed/renamed frame mustn't brick
   control), but the ack-await below then surfaces any real failure.
-- **One request in flight + await-ack.** Mirrors the app's `SocketRequestManager`:
-  **every** send (control AND the state-ping / saved-sounds polls) goes through one
-  `_transact` helper that registers a future keyed by the message id, sends, then
-  **awaits the `Response` whose `requestId` matches** (`COMMAND_ACK_TIMEOUT`, 10s),
-  under a per-device send lock so transactions never overlap on the wire. Control
-  sends `require_ack=True` (a non-2xx status or timeout **raises** → coordinator
-  rolls back the optimistic UI); polls send `require_ack=False` (still serialized +
-  drained, but a timeout/non-2xx is swallowed). The app awaits every request incl.
-  `GetSettings`; a poll that released the lock before its response (the old behavior)
-  could overlap a command unacked — the exact "bursts of unacked transactions" that
-  wedge the device. Don't reintroduce a send that bypasses `_transact`. (The
-  `requestId` correlation is real now — distinct from the pin-guard's id, which stays
-  logging-only. All requests use unique ids via `_next_message_id`, starting at 1 like
-  the app's `AtomicInteger`; `sessionId` is a random per-connection token.)
+- **One request in flight + await-ack, NO re-send.** Mirrors the app's
+  `SocketRequestManager`: **every** send (control AND the state-ping / saved-sounds
+  polls) goes through one `_transact` helper that registers a future keyed by the
+  message id, sends, then **awaits the `Response` whose `requestId` matches**
+  (`COMMAND_ACK_TIMEOUT`, 10s), under a per-device send lock so transactions never
+  overlap on the wire. **A slow/absent ack on a live socket does NOT re-send and
+  does NOT roll back** — the device is busy, not gone, and re-sending piles
+  duplicate commands onto an already-overloaded device, which makes it stop
+  responding for ~30s and then flush the whole backlog at once (observed on-device
+  2026-06-15). The app never retries either. So a control timeout is accepted
+  optimistically (the pin holds the UI; the device pushes real state when it
+  catches up; the 30s poll reconciles); only an actual socket **drop** or an
+  explicit **non-2xx rejection** raises → coordinator rolls back. Polls
+  (`require_ack=False`) are still serialized + drained but swallow timeouts. The app
+  awaits every request incl. `GetSettings`; a poll that released the lock before its
+  response (the old behavior) could overlap a command unacked — the exact "bursts of
+  unacked transactions" that wedge the device. Don't reintroduce a send that
+  bypasses `_transact`, and **don't re-add command-level retry** (it was removed
+  for the reason above). (The `requestId` correlation is real — distinct from the
+  pin-guard's id, which stays logging-only. All requests use unique ids via
+  `_next_message_id`, starting at 1 like the app's `AtomicInteger`; `sessionId` is a
+  random per-connection token.)
 - **Command coalescing.** A scene toggles power + sound + volume + light at once.
   Sent as separate protobuf messages they race, and out-of-order responses make
   the device end up in the wrong state (classic symptom: a "turn on" scene leaves
@@ -183,7 +191,7 @@ test that resolves `*.nanit.com`.
 - `test_websocket_reconnect.py` — reconnect backoff, send reaches socket, and
   proactive reconnect after a server drop (against an in-process fake server that
   now also sends a backend `Connected` frame and acks control requests). Covers the
-  attach gate, ack-on-success, non-2xx rejection, and ack-timeout.
+  attach gate, ack-on-success, non-2xx rejection, and slow-ack-without-resend.
 - `test_local_connection.py` — the direct-LAN transport: the deterministic mDNS
   URL, trust-all TLS context, device-token fetch/parse (incl. ms→s expiry scaling
   and 404 → no token), and the routing (prefer-local, fall back to remote when

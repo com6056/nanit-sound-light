@@ -73,12 +73,14 @@ WS_CLOSE_TIMEOUT = 5  # seconds
 # wedges (needs a power cycle) — this is the fix for that.
 COMMAND_ACK_TIMEOUT = 10  # seconds to await a matching Response
 
-# The relay can be up while the physical device is idle/detached behind it, so a
-# one-shot command (e.g. a bedtime scene) can be silently dropped — sent, but no
-# ack. Re-send on ack-timeout to ride through that: these are idempotent settings
-# writes, so re-sending is safe, and a later attempt can land once the device is
-# responsive again. Only ack-TIMEOUTs retry; an explicit non-2xx rejection does not.
-COMMAND_MAX_ATTEMPTS = 3
+# We do NOT re-send a command on a slow/absent ack. A timed-out ack on a LIVE
+# socket means the device is busy, not gone — and re-sending piles duplicate
+# commands onto an already-overloaded device, which is exactly what makes it
+# stop responding for ~30s and then flush the whole backlog at once. The official
+# app never retries either (one in flight, await ack, done). So a slow ack is
+# accepted optimistically (the pin holds the UI; the device pushes real state when
+# it catches up; the 30s poll reconciles). Only an actual socket DROP fails the
+# command (→ rollback); an explicit non-2xx rejection also fails it.
 
 # device.status enum value from Backend.device (Disconnected=0, Connected=1).
 # The app derives "remote route is live" solely from this and sends nothing
@@ -1284,13 +1286,14 @@ class SoundLightAPI:
     async def send_control_command(self, baby_uid: str, **kwargs) -> None:
         """Send one control command and await the device's ack, like the app.
 
-        Mirrors the official app's transaction model (SocketRequestManager):
-        one Request in flight per device, await the Response whose ``requestId``
-        matches (10s), and only then return. A non-2xx status or a timeout
-        raises so the coordinator rolls back the optimistic UI instead of
-        leaving a state the device never accepted. Replaces the old
-        fire-and-forget send, whose undrained responses degraded the device's
-        transaction state until it wedged (needed a power cycle).
+        Mirrors the official app's transaction model (SocketRequestManager): one
+        Request in flight per device, await the Response whose ``requestId``
+        matches (10s). One send, no retry — the app never re-sends, and re-sending
+        on a slow ack piles duplicates onto a busy device and wedges it. A slow/
+        absent ack on a LIVE socket is accepted optimistically (device busy, not
+        gone — the pin holds the UI, the device pushes real state when it catches
+        up). A socket drop or an explicit non-2xx rejection raises so the
+        coordinator rolls back the optimistic UI.
         """
         # Ensure we have a healthy WebSocket connection. Raise (rather than
         # silently return) so the caller's failure surfaces instead of the
@@ -1321,38 +1324,30 @@ class SoundLightAPI:
                 baby_uid,
             )
 
-        # One in flight per device, await the ack. Re-send (fresh id) on an
-        # ack-timeout so a command dropped while the device was momentarily
-        # idle/detached still lands on a later attempt; an explicit non-2xx
-        # rejection or a closed socket propagates immediately (no retry).
-        for attempt in range(1, COMMAND_MAX_ATTEMPTS + 1):
-            message_bytes, message_id = self.build_control_message(
-                session_id=self._session_id(baby_uid), **kwargs
-            )
-            _LOGGER.debug(
-                "Sending protobuf control for %s (id=%s, attempt %d/%d): %s (hex: %s)",
+        message_bytes, message_id = self.build_control_message(
+            session_id=self._session_id(baby_uid), **kwargs
+        )
+        _LOGGER.debug(
+            "Sending protobuf control for %s (id=%s): %s (hex: %s)",
+            baby_uid,
+            message_id,
+            kwargs,
+            message_bytes.hex(),
+        )
+        try:
+            await self._transact(baby_uid, message_bytes, message_id)
+            _LOGGER.debug("Control command id=%s on %s acked", message_id, baby_uid)
+        except CommandTimeoutError:
+            # Slow/absent ack but the socket is alive: the device is busy, not
+            # gone. Do NOT re-send (duplicates overload it) and do NOT roll back —
+            # accept optimistically; the device applies + pushes state when it
+            # drains, and the 30s poll reconciles if it never landed.
+            _LOGGER.warning(
+                "No prompt ack for %s command id=%s (device busy); "
+                "not re-sending, keeping optimistic state",
                 baby_uid,
                 message_id,
-                attempt,
-                COMMAND_MAX_ATTEMPTS,
-                kwargs,
-                message_bytes.hex(),
             )
-            try:
-                await self._transact(baby_uid, message_bytes, message_id)
-                _LOGGER.debug("Control command id=%s on %s acked", message_id, baby_uid)
-                return
-            except CommandTimeoutError:
-                if attempt >= COMMAND_MAX_ATTEMPTS:
-                    raise
-                _LOGGER.warning(
-                    "No ack for %s command (attempt %d/%d) — re-sending",
-                    baby_uid,
-                    attempt,
-                    COMMAND_MAX_ATTEMPTS,
-                )
-                # Make sure the socket is live before the next attempt.
-                await self.ensure_websocket_connection(baby_uid)
 
     async def _transact(
         self, baby_uid: str, message_bytes: bytes, message_id: int
@@ -1361,10 +1356,11 @@ class SoundLightAPI:
 
         One command in flight per device (the app's model): the lock is held
         until the matching Response (by requestId) arrives or the ack times out.
-        A timeout or non-2xx status raises ConnectionError so the coordinator
-        rolls back the optimistic UI. (Polls/diagnostics use ``_send_no_wait``
-        instead — they don't await, so a slow read can't stall a command.)
-        Returns the 2xx status code.
+        Raises ``CommandTimeoutError`` on a slow/absent ack (caller accepts it
+        optimistically), and ``ConnectionError`` on a socket drop or non-2xx
+        rejection (caller rolls back the optimistic UI). (Polls/diagnostics use
+        ``_send_no_wait`` instead — they don't await, so a slow read can't stall a
+        command.) Returns the 2xx status code.
         """
         lock = self._send_locks.setdefault(baby_uid, asyncio.Lock())
         async with lock:
@@ -1390,7 +1386,9 @@ class SoundLightAPI:
                         future, timeout=COMMAND_ACK_TIMEOUT
                     )
                 except asyncio.TimeoutError as e:
-                    self._schedule_reconnect(baby_uid)
+                    # Don't reconnect: the socket is alive, the device is just slow
+                    # (a genuine drop fails the future via the handler instead).
+                    # Reconnecting here was pointless churn during a device stall.
                     raise CommandTimeoutError(
                         f"No ack for command id={message_id} on {baby_uid} "
                         f"within {COMMAND_ACK_TIMEOUT}s"

@@ -9,10 +9,16 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AuthenticationError, MfaRequiredError, SoundLightAPI
-from .const import CONF_MFA_CODE, DOMAIN
+from .const import (
+    CONF_ENABLE_LOCAL_CONNECTION,
+    CONF_MFA_CODE,
+    DEFAULT_ENABLE_LOCAL_CONNECTION,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +40,14 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Nanit Sound + Light."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> NanitSoundLightOptionsFlow:
+        """Return the options flow (the integration's Configure button)."""
+        return NanitSoundLightOptionsFlow()
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -247,3 +261,30 @@ class NanitSoundLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if api._refresh_token:
             new_data["refresh_token"] = api._refresh_token
         return self.async_update_reload_and_abort(self._reauth_entry, data=new_data)
+
+
+class NanitSoundLightOptionsFlow(config_entries.OptionsFlow):
+    """Options: toggle the local (LAN) connection preference.
+
+    This is a config-entry option (set here via the integration's Configure
+    button), NOT a `configuration.yaml` setting — the integration is config-flow
+    only. Changing it reloads the entry (see __init__.py's update listener) so the
+    new preference takes effect.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self.config_entry.options.get(
+            CONF_ENABLE_LOCAL_CONNECTION, DEFAULT_ENABLE_LOCAL_CONNECTION
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_ENABLE_LOCAL_CONNECTION, default=current): bool,
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

@@ -18,7 +18,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AuthenticationError, SoundLightAPI
-from .const import DOMAIN
+from .const import (
+    CONF_ENABLE_LOCAL_CONNECTION,
+    DEFAULT_ENABLE_LOCAL_CONNECTION,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,7 +70,9 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         # The direct-LAN path is on by default (preferred for sends, relay as
         # fallback) and fully self-healing if local discovery fails. An options
         # toggle can disable it for environments where `.local` never resolves.
-        local_enabled = config_entry.options.get("enable_local_connection", True)
+        local_enabled = config_entry.options.get(
+            CONF_ENABLE_LOCAL_CONNECTION, DEFAULT_ENABLE_LOCAL_CONNECTION
+        )
         self.api = SoundLightAPI(session, local_enabled=local_enabled)
         if local_enabled:
             # The speaker's LAN address is a deterministic `.local` mDNS name, and

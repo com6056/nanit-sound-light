@@ -45,5 +45,16 @@
       "no_mfa_pending": "No MFA verification is pending.",
       "reauth_failed": "Re-authentication failed. Please try deleting and re-adding the integration."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nanit Sound + Light Options",
+        "description": "The integration prefers a direct connection to the device on your local network (faster, more reliable) and falls back to the Nanit cloud automatically. Turn this off to use the cloud only.",
+        "data": {
+          "enable_local_connection": "Use local (LAN) connection when available"
+        }
+      }
+    }
   }
 }

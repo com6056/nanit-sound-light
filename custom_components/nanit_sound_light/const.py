@@ -6,6 +6,9 @@ MODEL = "Sound + Light"
 
 # Configuration constants
 CONF_MFA_CODE = "mfa_code"
+# Options-flow key: prefer the direct LAN connection (with cloud fallback).
+CONF_ENABLE_LOCAL_CONNECTION = "enable_local_connection"
+DEFAULT_ENABLE_LOCAL_CONNECTION = True
 
 # API endpoints (discovered from APK analysis)
 NANIT_API_BASE = "https://api.nanit.com"
