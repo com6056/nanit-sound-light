@@ -878,13 +878,16 @@ class SoundLightAPI:
                     )
                     return
                 data = await response.json()
-            udt = data.get("userDeviceToken") or {}
+            # The wire JSON is snake_case (like /login: access_token, refresh_token)
+            # even though the app's decompiled DTO fields are camelCase. Accept the
+            # real snake_case keys, with camelCase as a forward-compat fallback.
+            udt = data.get("user_device_token") or data.get("userDeviceToken") or {}
             token = udt.get("token")
             if not token:
                 _LOGGER.debug("Device-token response for %s had no token", speaker_uid)
                 return
             expires_at: float | None = None
-            exp = udt.get("expirationTime")
+            exp = udt.get("expiration") or udt.get("expirationTime")
             if exp:
                 expires_at = float(exp)
                 # expirationTime's unit is unconfirmed; treat a > year-2286 value

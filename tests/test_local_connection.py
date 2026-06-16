@@ -109,10 +109,9 @@ class _FakeSession:
 
 
 async def test_device_token_fetch_parses_user_device_token(nsl):
+    # Real wire shape (snake_case), confirmed against the live API.
     session = _FakeSession(
-        payload={
-            "userDeviceToken": {"token": "DEVTOK", "expirationTime": 9_999_999_999}
-        }
+        payload={"user_device_token": {"token": "DEVTOK", "expiration": 9_999_999_999}}
     )
     api = nsl.api.SoundLightAPI(session=session)
     api._access_token = "user-access"
@@ -128,6 +127,18 @@ async def test_device_token_fetch_parses_user_device_token(nsl):
     assert len(session.calls) == 1
 
 
+async def test_device_token_fetch_accepts_camelcase_fallback(nsl):
+    """Forward-compat: still parse the app's camelCase DTO names if ever returned."""
+    session = _FakeSession(
+        payload={
+            "userDeviceToken": {"token": "DEVTOK", "expirationTime": 9_999_999_999}
+        }
+    )
+    api = nsl.api.SoundLightAPI(session=session)
+    api._access_token = "user-access"
+    assert await api._ensure_device_token("SPK123") == "DEVTOK"
+
+
 async def test_device_token_fetch_404_leaves_no_token(nsl):
     session = _FakeSession(status=404)
     api = nsl.api.SoundLightAPI(session=session)
@@ -138,7 +149,7 @@ async def test_device_token_fetch_404_leaves_no_token(nsl):
 async def test_device_token_expiration_in_ms_is_scaled(nsl):
     """A millisecond expirationTime is normalized to epoch seconds."""
     session = _FakeSession(
-        payload={"userDeviceToken": {"token": "T", "expirationTime": 9_999_999_999_000}}
+        payload={"user_device_token": {"token": "T", "expiration": 9_999_999_999_000}}
     )
     api = nsl.api.SoundLightAPI(session=session)
     api._access_token = "user-access"
