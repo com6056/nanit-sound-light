@@ -1,5 +1,9 @@
 # Nanit Sound + Light Integration
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/com6056/nanit-sound-light/main/custom_components/nanit_sound_light/brand/icon%402x.png" alt="Nanit Sound + Light" width="160">
+</p>
+
 [![GitHub Release][releases-shield]][releases]
 [![GitHub Activity][commits-shield]][commits]
 [![License][license-shield]](LICENSE)
