@@ -160,11 +160,11 @@ fix two real, recurring failures. Don't revert these without understanding why:
 - **Entity naming uses `has_entity_name`.** The base entity sets
   `_attr_has_entity_name = True` and each entity provides a short label (or `None`
   for the device-class default, like Temperature or Battery). Home Assistant
-  composes "<device> <label>". The light passes `None` so it reads as just the
-  device name (the primary entity). Power/Volume/Sound/Firmware pass explicit
-  labels, and Connection Type names itself through its `translation_key`. The
-  `unique_id` values stay `f"{device_uid}_{entity_type}"`, so they are stable across
-  this change.
+  composes "<device> <label>". Light, Power, Volume, and Sound pass explicit
+  labels (this device is multi-function, so the light is "Light" rather than the
+  unnamed primary entity), Firmware passes "Firmware", and Connection Type names
+  itself through its `translation_key`. The `unique_id` values stay
+  `f"{device_uid}_{entity_type}"`, so they are stable across this change.
 
 ## Protocol facts worth knowing
 

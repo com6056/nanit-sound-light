@@ -45,7 +45,11 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
         device_data: dict[str, Any],
     ) -> None:
         """Initialize the light."""
-        super().__init__(coordinator, device_uid, device_data, "light", "mdi:lightbulb")
+        # Named "Light" (not the primary/device-name entity) because this device
+        # is multi-function: the light sits alongside Power, Sound, and Volume.
+        super().__init__(
+            coordinator, device_uid, device_data, "light", "mdi:lightbulb", name="Light"
+        )
 
         # Light-specific attributes
         self._attr_supported_color_modes = {ColorMode.HS}
