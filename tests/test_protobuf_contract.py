@@ -96,7 +96,7 @@ async def test_backend_connected_frame_marks_device_attached(nsl, api):
         backend=pb2.Backend(device=pb2.BackendDevice(status=pb2.Connected))
     )
     await api._process_protobuf_message(
-        "baby123_speaker", connected.SerializeToString()
+        api._conn_key("baby123", "remote"), connected.SerializeToString()
     )
     assert api.is_device_attached("baby123") is True
 
@@ -105,7 +105,7 @@ async def test_backend_connected_frame_marks_device_attached(nsl, api):
         backend=pb2.Backend(device=pb2.BackendDevice(status=pb2.Disconnected))
     )
     await api._process_protobuf_message(
-        "baby123_speaker", disconnected.SerializeToString()
+        api._conn_key("baby123", "remote"), disconnected.SerializeToString()
     )
     assert api.is_device_attached("baby123") is True
 
@@ -118,7 +118,9 @@ async def test_response_with_requestid_resolves_pending_command(nsl, api):
     api._pending_responses["baby123"] = {42: future}
 
     message = nsl.pb2.Message(response=nsl.pb2.Response(requestId=42, statusCode=200))
-    await api._process_protobuf_message("baby123_speaker", message.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
 
     assert future.done() and future.result() == 200
     # A genuine Response also implies the device is attached.
@@ -138,7 +140,7 @@ async def test_response_settings_parses_into_device_state(nsl, api):
     message = pb2.Message(response=pb2.Response(requestId=7, settings=settings))
     raw = message.SerializeToString()
 
-    await api._process_protobuf_message("baby123_speaker", raw)
+    await api._process_protobuf_message(api._conn_key("baby123", "remote"), raw)
 
     state = api.get_device_state("baby123")
     assert state["is_on"] is True
@@ -159,7 +161,9 @@ async def test_external_request_change_triggers_callback(nsl, api):
     api.set_state_change_callback(on_change)
 
     message = pb2.Message(request=pb2.Request(id=1, settings=pb2.Settings(isOn=False)))
-    await api._process_protobuf_message("baby123_speaker", message.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
 
     assert api.get_device_state("baby123")["is_on"] is False
     assert notified == ["baby123"]
@@ -197,7 +201,9 @@ async def test_battery_status_parses(nsl, api):
     pb2 = nsl.pb2
     status = pb2.Status(battery=pb2.Battery(soc=pb2.SoC75, isCharging=True))
     message = pb2.Message(response=pb2.Response(requestId=1, status=status))
-    await api._process_protobuf_message("baby123_speaker", message.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
     state = api.get_device_state("baby123")
     assert state["battery_percent"] == 75
     assert state["battery_charging"] is True
@@ -217,7 +223,9 @@ async def test_battery_not_charging_when_field_absent(nsl, api):
             status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50, isCharging=True)),
         )
     )
-    await api._process_protobuf_message("baby123_speaker", s1.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), s1.SerializeToString()
+    )
     assert api.get_device_state("baby123")["battery_charging"] is True
     # Unplug: next status omits isCharging entirely.
     s2 = pb2.Message(
@@ -225,7 +233,9 @@ async def test_battery_not_charging_when_field_absent(nsl, api):
             requestId=2, status=pb2.Status(battery=pb2.Battery(soc=pb2.SoC50))
         )
     )
-    await api._process_protobuf_message("baby123_speaker", s2.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), s2.SerializeToString()
+    )
     assert api.get_device_state("baby123")["battery_charging"] is False
 
 
@@ -238,7 +248,9 @@ async def test_network_status_parses(nsl, api):
             requestId=1, networkStatus=pb2.NetworkStatus(currentAp=ap)
         )
     )
-    await api._process_protobuf_message("baby123_speaker", message.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
     state = api.get_device_state("baby123")
     assert state["wifi_rssi"] == -58
     assert state["wifi_ssid"] == "Nursery"
@@ -251,7 +263,9 @@ async def test_firmware_version_parses(nsl, api):
     message = pb2.Message(
         response=pb2.Response(requestId=1, firmware=pb2.FirmwareInfo(version="1.2.3"))
     )
-    await api._process_protobuf_message("baby123_speaker", message.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
     assert api.get_device_state("baby123")["firmware_version"] == "1.2.3"
 
 
@@ -273,7 +287,9 @@ async def test_sound_list_is_sanitized(nsl, api):
         )
     )
     message = pb2.Message(response=pb2.Response(requestId=1, settings=settings))
-    await api._process_protobuf_message("baby123_speaker", message.SerializeToString())
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
 
     options = api.get_device_state("baby123")["available_sounds"]
     assert options[0] == "No sound"

@@ -63,7 +63,11 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         # Use shared session from Home Assistant
         session = async_get_clientsession(hass)
-        self.api = SoundLightAPI(session)
+        # The direct-LAN path is on by default (preferred for sends, relay as
+        # fallback) and fully self-healing if local discovery fails. An options
+        # toggle can disable it for environments where `.local` never resolves.
+        local_enabled = config_entry.options.get("enable_local_connection", True)
+        self.api = SoundLightAPI(session, local_enabled=local_enabled)
 
         # Validate configuration
         if not self.validate_config():

@@ -106,9 +106,35 @@ fix two real, recurring failures — don't revert these without understanding wh
 - **WebSocket keepalive / reconnect.** The device keeps its socket alive with
   **protocol-level ping/pong (~20s)** — there is no app-level keepalive frame, so
   rely on the WS ping (`WS_PING_INTERVAL`), don't invent a heartbeat message. On a
-  drop, reconnect **proactively** with backoff `0 → 2 → 5 → 7s` (don't wait for
-  the 30s poll). The handler task is kept referenced so it can't be GC'd, and a
-  send while disconnected raises rather than silently no-op'ing.
+  drop, reconnect **proactively** with backoff `0 → 2 → 5 → 7s` (remote;
+  `0 → 3 → 10 → 60 → 90s` for local — don't wait for the 30s poll). The handler
+  task is kept referenced so it can't be GC'd, and a send while disconnected
+  raises rather than silently no-op'ing.
+- **Dual transport: prefer local (LAN), fall back to remote (relay).** The cloud
+  relay (`wss://remote.nanit.com/speakers/<uid>/user_connect/`) is laggy because
+  it sits up while the physical device is idle behind it. On the same LAN the app
+  talks to the speaker directly, so we do too: each device can have BOTH a `local`
+  and a `remote` socket open at once (keyed `baby_uid::transport`), and sends pick
+  the **local** socket when it's up (`_active_connection_key`), falling back to
+  remote. Device-level state (attachment, the one-in-flight ack map, the send
+  lock, sessionId) is shared across a device's transports — only the URL + auth
+  token differ. The local URL is the deterministic mDNS name
+  `wss://Nanit-<speaker_uid>.local:442` (NO path, unlike the relay), local auth is
+  `Authorization: token <device_token>` (a **per-device** token from
+  `GET /speakers/<uid>/udtokens`, NOT the user access token), and local TLS is
+  **trust-all** (`_build_insecure_ssl_context`: `check_hostname=False`,
+  `CERT_NONE`) because the device presents a self-signed cert the app accepts
+  unconditionally. Local is **best-effort and self-healing**: if the device-token
+  fetch fails or `Nanit-<uid>.local` doesn't resolve on the HA host, the local
+  connect is swallowed and the integration stays on the relay. Availability =
+  ANY transport up. **The backend readiness frame is relay-only** — a pure-local
+  connection latches `is_device_attached` on its first `Response` instead (the
+  existing defensive latch already covers this). Enabled by default; the
+  `enable_local_connection` entry option (default `True`) can turn it off. All RE
+  for this lives in the private infra repo (not here). **Not yet validated against
+  a real device** — the send
+  path degrades to remote if any local assumption is wrong, so a bad guess can't
+  brick control.
 
 ## Protocol facts worth knowing
 
@@ -158,6 +184,12 @@ test that resolves `*.nanit.com`.
   proactive reconnect after a server drop (against an in-process fake server that
   now also sends a backend `Connected` frame and acks control requests). Covers the
   attach gate, ack-on-success, non-2xx rejection, and ack-timeout.
+- `test_local_connection.py` — the direct-LAN transport: the deterministic mDNS
+  URL, trust-all TLS context, device-token fetch/parse (incl. ms→s expiry scaling
+  and 404 → no token), and the routing (prefer-local, fall back to remote when
+  local drops, availability while one transport is down, local-disabled connects
+  remote only). Runs two in-process fakes (local + remote) and reuses
+  `_FakeNanit` from `test_websocket_reconnect.py`.
 
 The heavier **Home Assistant fixture** suite lives in `tests_ha/` (it installs
 Home Assistant, so it's a separate run — `./tests_ha/run.sh`). It drives the real
