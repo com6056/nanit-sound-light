@@ -15,6 +15,8 @@ Covered:
 from __future__ import annotations
 
 import asyncio
+import http
+import logging
 
 import pytest
 import websockets
@@ -41,14 +43,41 @@ class _FakeNanit:
       transaction completes (set `status_code` to simulate a rejection).
     """
 
-    def __init__(self, pb2, *, status_code: int = 200, send_backend: bool = True):
+    def __init__(
+        self,
+        pb2,
+        *,
+        status_code: int = 200,
+        send_backend: bool = True,
+        reject_status: int | None = None,
+        reject_first: int = 0,
+        reject_always: bool = False,
+    ):
         self._pb2 = pb2
         self._status_code = status_code
         self._send_backend = send_backend
+        # Handshake rejection (for the auth-reject backoff tests). `reject_status`
+        # is the HTTP status returned by `process_request`; `reject_first` rejects
+        # that many handshakes then accepts; `reject_always` rejects every one.
+        self._reject_status = reject_status
+        self._reject_first = reject_first
+        self._reject_always = reject_always
+        self.handshakes = 0
         self.received: list[bytes] = []
         self.connections: list = []
         self._server = None
         self.port = 0
+
+    async def _process_request(self, connection, request):
+        """Reject the handshake with an HTTP status, or return None to accept."""
+        if self._reject_status is None:
+            return None
+        self.handshakes += 1
+        if self._reject_always or self.handshakes <= self._reject_first:
+            return connection.respond(
+                http.HTTPStatus(self._reject_status), "rejected\n"
+            )
+        return None
 
     async def start(self):
         async def handler(ws, *_args):
@@ -67,7 +96,9 @@ class _FakeNanit:
             except Exception:
                 pass
 
-        self._server = await websockets.serve(handler, "127.0.0.1", 0)
+        self._server = await websockets.serve(
+            handler, "127.0.0.1", 0, process_request=self._process_request
+        )
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def _maybe_ack(self, ws, raw: bytes) -> None:
@@ -314,6 +345,78 @@ async def test_command_sends_best_effort_when_no_backend_frame(nsl, monkeypatch)
 
     await api.close()
     await server.stop()
+
+
+async def test_persistent_remote_auth_reject_quiets_logs(nsl, monkeypatch, caplog):
+    """A relay that keeps rejecting the handshake (401/403/404) is logged loudly
+    only for the first few attempts, then one WARNING, then debug, so a wedged
+    device can't flood the log with one ERROR per retry."""
+    server = await _serve(nsl, monkeypatch, reject_status=403, reject_always=True)
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "test-token"
+    api._device_list = [DEVICE]
+    key = api._conn_key("baby123", "remote")
+
+    threshold = nsl.api.AUTH_REJECT_BACKOFF_THRESHOLD
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(threshold + 3):
+            await api._connect_transport(DEVICE, "remote")
+
+    # The first `threshold` attempts each hit the relay and were rejected; the
+    # threshold attempt armed the cooldown, so the remaining calls short-circuit
+    # before the handshake. The counter and the handshake count stop climbing.
+    assert api._auth_reject_counts[key] == threshold
+    assert server.handshakes == threshold
+    api_errors = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR and r.name.endswith(".api")
+    ]
+    api_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name.endswith(".api")
+    ]
+    # Loud ERROR for the first (threshold - 1) attempts, then a single WARNING at
+    # the threshold. So ERROR lines are bounded, not one per attempt.
+    assert len(api_errors) == threshold - 1
+    assert len(api_warnings) == 1
+
+    await api.close()
+    await server.stop()
+
+
+async def test_persistent_auth_reject_escalates_reconnect_interval(nsl, monkeypatch):
+    """Once consecutive auth rejections cross the threshold, the reconnect loop
+    switches from the fast app-matching backoff to the long, quiet interval."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._device_list = [DEVICE]
+
+    async def fake_connect_transport(device_info, transport):
+        # Simulate _handle_auth_reject's effect without real sockets: the
+        # transport never connects and the auth-reject counter climbs.
+        ck = api._conn_key(device_info["baby_uid"], transport)
+        api._auth_reject_counts[ck] = api._auth_reject_counts.get(ck, 0) + 1
+
+    monkeypatch.setattr(api, "_connect_transport", fake_connect_transport)
+
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+        # Stop after the long interval has been used a couple of times.
+        if delays.count(nsl.api.AUTH_REJECT_RETRY_INTERVAL) >= 2:
+            api._closing = True
+        await real_sleep(0)
+
+    monkeypatch.setattr(nsl.api.asyncio, "sleep", fake_sleep)
+
+    await api._reconnect_with_backoff("baby123", "remote")
+
+    assert delays[0] != nsl.api.AUTH_REJECT_RETRY_INTERVAL  # started on fast backoff
+    assert nsl.api.AUTH_REJECT_RETRY_INTERVAL in delays  # escalated to the long one
+    assert delays[-1] == nsl.api.AUTH_REJECT_RETRY_INTERVAL
 
 
 async def test_inflight_command_fails_fast_on_socket_drop(nsl, monkeypatch):

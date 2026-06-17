@@ -131,6 +131,34 @@ fix two real, recurring failures. Don't revert these without understanding why:
   `0 → 3 → 10 → 60 → 90s` for local, don't wait for the 30s poll). The handler
   task is kept referenced so it can't be GC'd, and a send while disconnected
   raises rather than silently no-op'ing.
+- **Auth-rejection backoff + local token invalidation.** A handshake rejected
+  with an auth status is handled apart from a transient drop. On a LOCAL 401/403
+  the cached per-device token is dropped (`_device_tokens.pop`) so the next
+  attempt refetches a fresh one. The device rotates that token server-side and
+  can rotate it before our cached copy's clock expiry, so a 401/403 is the only
+  signal the cached token went stale. Without this we would re-present the stale
+  token and loop on 403 until a reload. Separately, once consecutive auth
+  rejections on a transport cross `AUTH_REJECT_BACKOFF_THRESHOLD` (4), that
+  transport switches from the fast app-matching backoff to a long, quiet
+  `AUTH_REJECT_RETRY_INTERVAL` (120s) and stops logging each failure at ERROR
+  (loud for the first few, one WARNING at the threshold, then debug). This keeps
+  a wedged device (reachable on the LAN, TLS answers on `:442`, but the app layer
+  refuses all auth until a power cycle) from flooding the log with thousands of
+  ERROR lines. The long interval is enforced two ways: the reconnect loop sleeps
+  it, AND a per-key `_auth_reject_until` timestamp short-circuits `_connect_transport`
+  itself (before the `/udtokens` fetch and the handshake). The timestamp gate is
+  what throttles the OTHER connect driver, the 30s coordinator poll (it reaches
+  `_connect_transport` via `ensure_websocket_connection` -> `connect_device`, which
+  the reconnect-loop delay does not cover), so a wedged device hits `/udtokens` at
+  most once per interval instead of several times per poll. A clean connect resets
+  the per-key count and timestamp, so a normal transient drop keeps the fast
+  backoff, and the first few sub-threshold rejections still retry fast and refetch
+  the token so a genuine token rotation self-heals quickly.
+  Auth statuses are 401/403 for local and 401/403/404 for the relay (a 404 on
+  `user_connect` means the relay holds no session for the device, so retrying
+  fast is pointless). Status is read defensively from the websockets exception
+  (`InvalidStatus.response.status_code` on >= 13, `InvalidStatusCode.status_code`
+  on older builds) via `_handshake_status`.
 - **Dual transport: prefer local (LAN), fall back to remote (relay).** The cloud
   relay (`wss://remote.nanit.com/speakers/<uid>/user_connect/`) is laggy because
   it sits up while the physical device is idle behind it. On the same LAN the app

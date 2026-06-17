@@ -339,6 +339,101 @@ async def test_device_still_available_while_one_transport_down(nsl, monkeypatch)
     await remote.stop()
 
 
+async def test_local_403_invalidates_device_token_and_refetches(nsl, monkeypatch):
+    """A local handshake rejected with 403 drops the cached device token so the
+    next attempt refetches a fresh one.
+
+    The device rotates the per-device token server-side, and it can rotate before
+    our cached copy's clock expiry, so without invalidation-on-403 we would keep
+    presenting a stale token and loop on 403 forever. Here the first handshake is
+    rejected, which must invalidate the cache; the second refetches a fresh token
+    and connects.
+    """
+    local = _FakeNanit(nsl.pb2, reject_status=403, reject_first=1)
+    await local.start()
+
+    session = _FakeSession(
+        payload={"user_device_token": {"token": "FRESH", "expiration": 9_999_999_999}}
+    )
+    api = nsl.api.SoundLightAPI(session=session)
+    api._access_token = "user-access"
+    api._device_list = [DEVICE]
+    # A stale cached token with no clock expiry: _ensure_device_token would keep
+    # serving it indefinitely without the invalidation fix.
+    api._device_tokens["SPK123"] = ("STALE", None)
+    monkeypatch.setattr(
+        api, "_local_ws_url", lambda _uid: f"ws://127.0.0.1:{local.port}"
+    )
+    local_key = _local_key(api)
+
+    # First attempt presents the stale token and is rejected 403.
+    await api._connect_transport(DEVICE, "local")
+    assert not api._transport_connected(local_key)
+    assert "SPK123" not in api._device_tokens  # token invalidated on 403
+    assert api._auth_reject_counts[local_key] == 1  # rejection counted
+    assert session.calls == []  # the stale cached token was used, no refetch yet
+
+    # Second attempt refetches a fresh token and connects (server now accepts).
+    await api._connect_transport(DEVICE, "local")
+    await _wait_until(lambda: api._transport_connected(local_key))
+    assert session.calls  # refetched via /udtokens after invalidation
+    assert api._device_tokens["SPK123"][0] == "FRESH"
+    assert local_key not in api._auth_reject_counts  # reset on a clean connect
+
+    await api.close()
+    await local.stop()
+
+
+async def test_local_auth_reject_cooldown_stops_udtokens_refetch(nsl, monkeypatch):
+    """Once local auth rejections cross the threshold, further connect attempts
+    are skipped during the cooldown, so a wedged device stops refetching /udtokens.
+
+    This covers the poll-path gap: the 30s coordinator poll drives
+    ensure_websocket_connection -> connect_device -> _connect_transport, which is
+    NOT the reconnect loop, so without a time-based gate it would keep hitting the
+    cloud token endpoint every cycle. The cooldown short-circuits the connect
+    attempt itself, before the token fetch and the handshake.
+    """
+    local = _FakeNanit(nsl.pb2, reject_status=403, reject_always=True)
+    await local.start()
+    session = _FakeSession(
+        payload={"user_device_token": {"token": "T", "expiration": 9_999_999_999}}
+    )
+    api = nsl.api.SoundLightAPI(session=session)
+    api._access_token = "user-access"
+    api._device_list = [DEVICE]
+    monkeypatch.setattr(
+        api, "_local_ws_url", lambda _uid: f"ws://127.0.0.1:{local.port}"
+    )
+    local_key = _local_key(api)
+    threshold = nsl.api.AUTH_REJECT_BACKOFF_THRESHOLD
+
+    # Drive attempts up to the threshold. Each rejected attempt refetches the
+    # token once (the 403 invalidated the cache), so the cloud is hit each time.
+    for _ in range(threshold):
+        await api._connect_transport(DEVICE, "local")
+    assert api._auth_reject_counts[local_key] == threshold
+    assert local_key in api._auth_reject_until  # cooldown armed
+    udtoken_calls = len(session.calls)
+    handshakes = local.handshakes
+
+    # Further attempts during the cooldown short-circuit: no new /udtokens fetch,
+    # no new handshake. This is the poll hammering the wedged device.
+    for _ in range(5):
+        await api._connect_transport(DEVICE, "local")
+    assert len(session.calls) == udtoken_calls  # cloud not hit again
+    assert local.handshakes == handshakes  # no further connect attempts
+
+    # When the cooldown elapses the gate reopens and a connect is attempted again
+    # (proving it is time-based, not a permanent lockout).
+    api._auth_reject_until[local_key] = 0
+    await api._connect_transport(DEVICE, "local")
+    assert local.handshakes == handshakes + 1
+
+    await api.close()
+    await local.stop()
+
+
 async def test_local_disabled_connects_remote_only(nsl, monkeypatch):
     api, local, remote = await _connect_both(nsl, monkeypatch, local_enabled=False)
     # If local were attempted this would raise. With local disabled it must not be.

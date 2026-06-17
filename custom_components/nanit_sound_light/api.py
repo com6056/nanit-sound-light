@@ -137,6 +137,21 @@ def _local_reconnect_backoff(retries: int) -> int:
     return _LOCAL_BACKOFF_SCHEDULE[idx]
 
 
+# Persistent auth-rejection backoff. A handshake rejected with 401/403 (local)
+# or 401/403/404 (the relay's 404 on user_connect means it holds no session for
+# the device) is NOT a transient drop: retrying fast cannot fix a token the
+# device has stopped accepting or a relay session that no longer exists. After
+# this many consecutive auth rejections on one transport, switch it to a long,
+# quiet retry interval so a wedged device (reachable but refusing auth, which
+# needs a power cycle) cannot flood the log with thousands of ERROR lines or
+# hammer the cloud `/udtokens` endpoint overnight. A successful connect resets
+# the count, so a normal transient drop keeps the fast app-matching backoff.
+AUTH_REJECT_BACKOFF_THRESHOLD = 4
+AUTH_REJECT_RETRY_INTERVAL = 120  # seconds (2 min) once the threshold is crossed
+_AUTH_REJECT_STATUSES_LOCAL = frozenset({401, 403})
+_AUTH_REJECT_STATUSES_REMOTE = frozenset({401, 403, 404})
+
+
 # Transports per device, in send-preference order: try LOCAL first (fast, direct
 # LAN), fall back to the REMOTE cloud relay. The app keeps both open on the same
 # network and prefers local for sends (ControlSocketDecision / priority AP>LOCAL>
@@ -270,6 +285,19 @@ class SoundLightAPI:
         self._closing = False
         self._connect_locks: dict[str, asyncio.Lock] = {}
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
+        # Consecutive auth-rejection (401/403, or relay 404) count per connection
+        # key. Drives the long, quiet retry interval for a transport whose
+        # handshake keeps being refused (e.g. a wedged device). Reset on a
+        # successful connect, so a normal transient drop keeps the fast backoff.
+        self._auth_reject_counts: dict[str, int] = {}
+        # Wall-clock time (per connection key) until which connects are skipped
+        # after persistent auth rejection. Armed once the count crosses the
+        # threshold. This time-gates the connect ATTEMPT itself, so the 30s
+        # coordinator poll (which drives connect_device -> _connect_transport via
+        # ensure_websocket_connection) can't keep refetching /udtokens on a wedged
+        # device. The reconnect loop's long sleep and this gate use the same
+        # interval. Cleared on a successful connect.
+        self._auth_reject_until: dict[str, float] = {}
         # Strong refs to the per-connection message-handler tasks. asyncio only
         # holds a weak reference to a bare create_task() result, so without this
         # the handler could be garbage-collected mid-run and silently stop
@@ -962,6 +990,22 @@ class SoundLightAPI:
         _baby, transport = self._split_conn_key(key)
         return "local" if transport == TRANSPORT_LOCAL else "cloud"
 
+    @staticmethod
+    def _handshake_status(exc: BaseException) -> int | None:
+        """HTTP status from a rejected WebSocket handshake, or None.
+
+        websockets >= 13 raises `InvalidStatus` carrying `.response.status_code`;
+        older builds raised `InvalidStatusCode` with `.status_code`. Read both
+        defensively so auth-rejection handling works across the supported range.
+        A non-handshake error (DNS failure, refused, timeout) has neither, so
+        this returns None and the caller treats it as a transient error.
+        """
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        if status is None:
+            status = getattr(exc, "status_code", None)
+        return status if isinstance(status, int) else None
+
     async def _connect_transport(
         self, device_info: dict[str, Any], transport: str
     ) -> None:
@@ -981,6 +1025,22 @@ class SoundLightAPI:
         async with lock:
             if self._transport_connected(connection_key):
                 return  # connected while we waited for the lock
+
+            # Auth-rejection cooldown: a transport that keeps being refused is in
+            # a back-off window. Skip the connect ATTEMPT (before the /udtokens
+            # fetch and the handshake), so any driver, the reconnect loop AND the
+            # 30s poll via ensure_websocket_connection, respects the back-off and
+            # a wedged device stops triggering token refetches.
+            cooldown_until = self._auth_reject_until.get(connection_key, 0)
+            remaining = cooldown_until - time.time()
+            if remaining > 0:
+                _LOGGER.debug(
+                    "Skipping %s connect for %s, in auth-reject cooldown for %.0fs",
+                    transport,
+                    speaker_uid,
+                    remaining,
+                )
+                return
 
             if transport == TRANSPORT_REMOTE:
                 ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
@@ -1037,6 +1097,10 @@ class SoundLightAPI:
                 )
 
                 self._websockets[connection_key] = websocket
+                # Connected cleanly, so clear any persistent auth-rejection state
+                # for this transport (back to the fast backoff on a future drop).
+                self._auth_reject_counts.pop(connection_key, None)
+                self._auth_reject_until.pop(connection_key, None)
 
                 # A local socket is a direct LAN connection to the device, so
                 # connecting at all means the device is present and reachable.
@@ -1068,13 +1132,80 @@ class SoundLightAPI:
                 )
 
             except Exception as e:
-                log = _LOGGER.debug if transport == TRANSPORT_LOCAL else _LOGGER.error
-                log(
-                    "Failed to connect to Sound + Light device %s via %s: %s",
-                    speaker_uid,
-                    transport,
-                    e,
+                status = self._handshake_status(e)
+                reject_statuses = (
+                    _AUTH_REJECT_STATUSES_LOCAL
+                    if transport == TRANSPORT_LOCAL
+                    else _AUTH_REJECT_STATUSES_REMOTE
                 )
+                if status in reject_statuses:
+                    self._handle_auth_reject(connection_key, transport, speaker_uid, e)
+                else:
+                    # Transient error (DNS, refused, timeout, mid-handshake drop).
+                    # Keep the fast app-matching backoff and the usual log level.
+                    log = (
+                        _LOGGER.debug if transport == TRANSPORT_LOCAL else _LOGGER.error
+                    )
+                    log(
+                        "Failed to connect to Sound + Light device %s via %s: %s",
+                        speaker_uid,
+                        transport,
+                        e,
+                    )
+
+    def _handle_auth_reject(
+        self, connection_key: str, transport: str, speaker_uid: str, exc: Exception
+    ) -> None:
+        """Record a rejected handshake (401/403, or the relay's 404) and log it.
+
+        The local socket's per-device token is dropped so the next attempt
+        refetches a fresh one: the device rotates that token server-side, and it
+        can rotate before our cached copy's clock expiry, so a 401/403 is the
+        only signal that the cached token went stale. (The relay uses the user
+        access token, refreshed elsewhere, so there is nothing to drop there.)
+        Logging is loud for the first few attempts, then a single WARNING when we
+        switch to the long retry interval, then debug, so a device that is
+        reachable but refusing auth can't flood the log.
+        """
+        if transport == TRANSPORT_LOCAL:
+            self._device_tokens.pop(speaker_uid, None)
+        count = self._auth_reject_counts.get(connection_key, 0) + 1
+        self._auth_reject_counts[connection_key] = count
+        if count >= AUTH_REJECT_BACKOFF_THRESHOLD:
+            # Arm (or extend) the cooldown so every connect driver backs off,
+            # not just the reconnect loop. The first few rejections below the
+            # threshold still retry fast and refetch the token, so a genuine
+            # token rotation self-heals quickly; only a persistently-refused
+            # (wedged) device gets time-gated.
+            self._auth_reject_until[connection_key] = (
+                time.time() + AUTH_REJECT_RETRY_INTERVAL
+            )
+        if count < AUTH_REJECT_BACKOFF_THRESHOLD:
+            log = _LOGGER.debug if transport == TRANSPORT_LOCAL else _LOGGER.error
+            log(
+                "Sound + Light device %s rejected %s auth (%s), retrying",
+                speaker_uid,
+                transport,
+                exc,
+            )
+        elif count == AUTH_REJECT_BACKOFF_THRESHOLD:
+            _LOGGER.warning(
+                "Sound + Light device %s keeps refusing %s auth after %d attempts. "
+                "It is reachable but rejecting credentials, which usually means the "
+                "device needs a power cycle. Backing off to retry every %ds and "
+                "quieting these logs until it recovers",
+                speaker_uid,
+                transport,
+                count,
+                AUTH_REJECT_RETRY_INTERVAL,
+            )
+        else:
+            _LOGGER.debug(
+                "Sound + Light device %s still refusing %s auth (attempt %d)",
+                speaker_uid,
+                transport,
+                count,
+            )
 
     async def connect_device(self, device_info: dict[str, Any]) -> None:
         """Connect a device's transports: remote always, local when enabled.
@@ -1136,7 +1267,18 @@ class SoundLightAPI:
         )
         retries = 0
         while not self._closing and not self._transport_connected(connection_key):
-            delay = backoff(retries)
+            # A transport whose handshake keeps being refused (a wedged device)
+            # gets a long, quiet retry interval instead of the fast app-matching
+            # schedule, so it can't hammer the cloud or flood the log. A clean
+            # connect resets the count (in _connect_transport) and we fall back
+            # to the fast schedule.
+            if (
+                self._auth_reject_counts.get(connection_key, 0)
+                >= AUTH_REJECT_BACKOFF_THRESHOLD
+            ):
+                delay = AUTH_REJECT_RETRY_INTERVAL
+            else:
+                delay = backoff(retries)
             if delay:
                 await asyncio.sleep(delay)
             if self._closing:
@@ -2138,6 +2280,8 @@ class SoundLightAPI:
         for task in self._reconnect_tasks.values():
             task.cancel()
         self._reconnect_tasks.clear()
+        self._auth_reject_counts.clear()
+        self._auth_reject_until.clear()
         for task in self._handler_tasks.values():
             task.cancel()
         self._handler_tasks.clear()
