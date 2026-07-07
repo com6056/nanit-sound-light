@@ -67,8 +67,6 @@ async def coordinator(hass):
         coord = NanitSoundLightCoordinator(hass, entry)
 
     coord.api = api
-    # Avoid the real 1s ping sleep inside the flush.
-    coord._ping_device_for_state = AsyncMock()
     coord._devices = [{"speaker_name": "Nursery", "baby_uid": "baby1"}]
     coord.data = {
         "devices": {

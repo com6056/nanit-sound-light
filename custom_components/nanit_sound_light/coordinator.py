@@ -228,7 +228,6 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
                     # slow device echo can't undo a just-issued command.
                     merged = {**device, **self._device_states.get(baby_uid, {})}
                     self._merge_device_state(baby_uid, merged, parsed_state)
-                    merged["last_update"] = self.hass.loop.time()
                     self._device_states[baby_uid] = merged
 
                 except Exception as e:
@@ -344,15 +343,6 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         except Exception as e:  # noqa: BLE001 (local is best-effort)
             _LOGGER.debug("mDNS resolve error for %s: %s", speaker_uid, e)
             return None
-
-    async def _ping_device_for_state(self, baby_uid: str) -> None:
-        """Send ping command to get current device state using protobuf."""
-        try:
-            await self.api.send_ping_for_state(baby_uid)
-            # Wait briefly for response
-            await asyncio.sleep(1)
-        except Exception as e:
-            _LOGGER.debug("Ping failed for %s: %s", baby_uid, e)
 
     async def async_send_control_command(self, baby_uid: str, **kwargs) -> None:
         """Queue a control command, coalescing concurrent fields into one send.
