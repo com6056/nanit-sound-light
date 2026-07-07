@@ -7,6 +7,7 @@ call_later / task scheduling). The device-facing api is mocked.
 from __future__ import annotations
 
 import asyncio
+import struct
 from unittest.mock import AsyncMock
 
 from custom_components.nanit_sound_light.coordinator import COMMAND_COALESCE_DELAY
@@ -52,6 +53,27 @@ async def test_pin_guard_suppresses_stale_echo_then_releases(hass, coordinator):
     coordinator.api.get_device_state.return_value = {"is_on": False}
     await coordinator._on_device_state_change("baby1")
     assert coordinator.data["devices"]["baby1"]["is_on"] is False
+
+
+async def test_pin_releases_on_float32_confirmation(hass, coordinator):
+    """Float fields ride protobuf float32: the device's confirming echo is the
+    float32 rounding of what we commanded. That must release the pin, not be
+    treated as a contradicting echo that holds it for the full window."""
+    commanded = 128 / 255  # a real slider value, not float32-representable
+    echoed = struct.unpack("<f", struct.pack("<f", commanded))[0]
+    assert echoed != commanded  # raw float64 equality would have failed here
+
+    await coordinator.async_send_control_command("baby1", brightness=commanded)
+
+    # Device confirms with its float32 echo -> the pin must release...
+    coordinator.api.get_device_state.return_value = {"brightness": echoed}
+    await coordinator._on_device_state_change("baby1")
+    assert "baby1" not in coordinator._pinned_fields
+
+    # ...so a genuine later external change flows through immediately.
+    coordinator.api.get_device_state.return_value = {"brightness": 0.25}
+    await coordinator._on_device_state_change("baby1")
+    assert coordinator.data["devices"]["baby1"]["brightness"] == 0.25
 
 
 async def test_pin_guard_releases_after_window(hass, coordinator):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import struct
 from datetime import timedelta
 from typing import Any
 
@@ -49,6 +50,24 @@ COMMAND_PIN_SECONDS = 30.0
 # poll, or after a reconnect lost it), capped by these.
 INITIAL_STATE_ATTEMPTS = 6  # × interval ≈ 3s max
 INITIAL_STATE_INTERVAL = 0.5  # seconds
+
+
+def _proto_float32(value: Any) -> Any:
+    """Round a float through protobuf's float32 wire precision.
+
+    Settings.brightness/volume and Color.hue/saturation are proto2 `float`
+    (32-bit). We command a Python float64, but the device's echo comes back
+    float32-rounded, so pinning the raw float64 made the confirmation equality
+    in _merge_device_state fail for almost every real value (only exact dyadic
+    values like 0.0/0.5/1.0 survive the round-trip) — the pin then always held
+    the full COMMAND_PIN_SECONDS cap and "releases early on confirmation"
+    never actually happened for float fields. Pinning the float32-rounded
+    value keeps the comparison EXACT (no tolerance, so no false confirmation)
+    while matching what the device can actually echo back.
+    """
+    if isinstance(value, float):
+        return struct.unpack("<f", struct.pack("<f", value))[0]
+    return value
 
 
 class NanitSoundLightCoordinator(DataUpdateCoordinator):
@@ -444,7 +463,9 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             if key not in snapshot:
                 snapshot[key] = device_data.get(key)
             device_data[key] = value
-            pins[key] = (value, expiry)
+            # Pin the float32-rounded value so the device's echo (float32 on
+            # the wire) compares equal and releases the pin, see _proto_float32.
+            pins[key] = (_proto_float32(value), expiry)
 
         self.async_update_listeners()
 
