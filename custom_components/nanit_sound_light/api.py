@@ -82,6 +82,13 @@ WS_PING_INTERVAL = 20  # seconds
 WS_PING_TIMEOUT = 20  # seconds, drop a half-open socket instead of wedging
 WS_CLOSE_TIMEOUT = 5  # seconds
 
+# Bound every REST call. HA's shared aiohttp session defaults to a 5-minute
+# total timeout, so a hung Nanit API could stall a coordinator refresh for
+# minutes. 30s is generous for these small JSON endpoints. A timeout surfaces
+# as an aiohttp/asyncio error, which every call site already treats as
+# transient.
+REST_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
 # Command transaction model, mirroring the official app's SocketRequestManager:
 # send ONE Request, then await the Response whose requestId matches (one in
 # flight, drain each response). The app uses a 10s ack timeout. Fire-and-forget
@@ -450,7 +457,7 @@ class SoundLightAPI:
             )
 
             async with self._session.post(
-                NANIT_AUTH_URL, json=auth_data, headers=headers
+                NANIT_AUTH_URL, json=auth_data, headers=headers, timeout=REST_TIMEOUT
             ) as response:
                 response_text = await response.text()
                 _LOGGER.debug(
@@ -564,7 +571,7 @@ class SoundLightAPI:
             )
 
             async with self._session.post(
-                NANIT_AUTH_URL, json=mfa_data, headers=headers
+                NANIT_AUTH_URL, json=mfa_data, headers=headers, timeout=REST_TIMEOUT
             ) as response:
                 _LOGGER.debug(
                     "MFA response: status=%d, success=%s",
@@ -643,7 +650,9 @@ class SoundLightAPI:
         try:
             refresh_url = f"{NANIT_API_BASE}/tokens/refresh"
             _LOGGER.debug("Attempting token refresh")
-            async with self._session.post(refresh_url, json=refresh_data) as response:
+            async with self._session.post(
+                refresh_url, json=refresh_data, timeout=REST_TIMEOUT
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     self._access_token = data.get("access_token")
@@ -732,7 +741,9 @@ class SoundLightAPI:
         after the context manager has released the underlying connection.
         """
         headers = {"Authorization": f"Bearer {self._access_token}"}
-        async with self._session.get(NANIT_BABIES_URL, headers=headers) as response:
+        async with self._session.get(
+            NANIT_BABIES_URL, headers=headers, timeout=REST_TIMEOUT
+        ) as response:
             if response.status == 200:
                 return await response.json()
             if response.status == 401:
@@ -745,7 +756,7 @@ class SoundLightAPI:
         # Refresh succeeded, retry with the new access token.
         headers = {"Authorization": f"Bearer {self._access_token}"}
         async with self._session.get(
-            NANIT_BABIES_URL, headers=headers
+            NANIT_BABIES_URL, headers=headers, timeout=REST_TIMEOUT
         ) as retry_response:
             if retry_response.status == 200:
                 return await retry_response.json()
@@ -834,7 +845,9 @@ class SoundLightAPI:
             "nanit-api-version": "1",
         }
         try:
-            async with self._session.get(url, headers=headers) as response:
+            async with self._session.get(
+                url, headers=headers, timeout=REST_TIMEOUT
+            ) as response:
                 if response.status != 200:
                     _LOGGER.debug(
                         "Device-token fetch for %s returned %d, staying on relay",
@@ -2224,14 +2237,16 @@ class SoundLightAPI:
         # Stop reconnecting before tearing sockets down, else the handler's
         # teardown would immediately schedule a fresh reconnect loop.
         self._closing = True
-        for task in self._reconnect_tasks.values():
+        pending_tasks = [
+            *self._reconnect_tasks.values(),
+            *self._handler_tasks.values(),
+        ]
+        for task in pending_tasks:
             task.cancel()
         self._reconnect_tasks.clear()
         self._auth_reject_counts.clear()
         self._auth_reject_until.clear()
         self._transient_fail_counts.clear()
-        for task in self._handler_tasks.values():
-            task.cancel()
         self._handler_tasks.clear()
 
         # Fail any in-flight command waiters and drop readiness/session state so
@@ -2270,6 +2285,21 @@ class SoundLightAPI:
 
         # Clear websocket references
         self._websockets.clear()
+
+        # Wait for the cancelled tasks to actually finish, so a reload can't
+        # race the old instance's teardown (handler finallys, reconnect
+        # loops). Cancelled-but-unawaited tasks would otherwise still be
+        # unwinding while the replacement coordinator connects.
+        if pending_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_tasks, return_exceptions=True),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Some connection tasks did not finish within the close timeout"
+                )
 
         # Clear device state
         self._device_state.clear()

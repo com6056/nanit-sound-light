@@ -120,7 +120,7 @@ class _FakeSession:
         self._payload = payload or {}
         self.calls: list[tuple] = []
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, timeout=None):
         self.calls.append((url, headers))
         return _FakeResp(self._status, self._payload)
 

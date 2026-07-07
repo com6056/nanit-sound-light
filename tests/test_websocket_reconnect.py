@@ -421,6 +421,21 @@ async def test_persistent_auth_reject_escalates_reconnect_interval(nsl, monkeypa
     assert delays[-1] == nsl.api.AUTH_REJECT_RETRY_INTERVAL
 
 
+async def test_close_waits_for_connection_tasks(nsl, fake_nanit):
+    """close() awaits its cancelled handler/reconnect tasks, so nothing from
+    the old instance is still unwinding when a reload builds the next one."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "test-token"
+    api._device_list = [DEVICE]
+
+    await api.connect_device(DEVICE)
+    handler_tasks = list(api._handler_tasks.values())
+    assert handler_tasks
+
+    await api.close()
+    assert all(task.done() for task in handler_tasks)
+
+
 async def test_hard_expired_token_refreshes_before_remote_connect(
     nsl, fake_nanit, monkeypatch
 ):
