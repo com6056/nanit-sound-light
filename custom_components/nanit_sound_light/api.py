@@ -208,8 +208,12 @@ class CommandTimeoutError(ConnectionError):
     """A control command was sent but not acked within COMMAND_ACK_TIMEOUT.
 
     A ConnectionError subclass (so existing handlers still catch it), but
-    distinct so the sender can retry an ack-timeout without retrying an explicit
-    device rejection.
+    distinct so the sender can tell a slow/absent ack apart from a socket drop
+    or an explicit device rejection. The distinction matters because the
+    responses are OPPOSITE: a timeout on a live socket is accepted
+    optimistically and must NOT re-send (duplicates wedge a busy device; the
+    retry that once lived here was removed for exactly that, see CLAUDE.md),
+    while a drop or rejection propagates so the coordinator rolls back.
     """
 
 
@@ -318,9 +322,10 @@ class SoundLightAPI:
         self._send_locks: dict[str, asyncio.Lock] = {}
         self._pending_responses: dict[str, dict[int, asyncio.Future]] = {}
 
-        # Random per-connection sessionId, mirroring the app (a per-launch
-        # SecureRandom token). The device tolerates a null sessionId in
-        # responses, but stamping a fresh one per socket matches the app.
+        # Random per-device sessionId, mirroring the app (a per-launch
+        # SecureRandom token). Created once per API lifetime and reused across
+        # reconnects. The device treats it as opaque (it even tolerates a null
+        # sessionId), so rotating it per socket isn't needed.
         self._session_ids: dict[str, str] = {}
 
     def has_stored_credentials(self) -> bool:
@@ -1215,7 +1220,7 @@ class SoundLightAPI:
         return self._message_id
 
     def _session_id(self, baby_uid: str) -> str:
-        """Return this connection's random sessionId, creating one if needed."""
+        """Return this device's random sessionId, creating one if needed."""
         sid = self._session_ids.get(baby_uid)
         if sid is None:
             # ~50 random bits as an opaque token (the app uses BigInteger(50,
@@ -2033,7 +2038,8 @@ class SoundLightAPI:
                         )
                     return
 
-                # If message parsed as Message but has unknown structure, fall through to legacy parsing
+                # Parsed as a Message but carried none of response/request/
+                # backend: an unknown frame type, ignored.
 
             except Exception as e:
                 _LOGGER.warning("Failed to parse message for %s: %s", baby_uid, e)
