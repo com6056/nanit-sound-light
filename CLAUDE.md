@@ -84,7 +84,11 @@ fix two real, recurring failures. Don't revert these without understanding why:
   for the reason above). (The `requestId` correlation is real, distinct from the
   pin-guard's id, which stays logging-only. All requests use unique ids via
   `_next_message_id`, starting at 1 like the app's `AtomicInteger`. `sessionId` is a
-  random per-connection token.) Validated on-device 2026-06-15: a 20-command
+  random per-device token, created once per API lifetime.) A socket **drop** while
+  the OTHER transport is still up re-sends the command once on the survivor
+  instead of failing — including when `send()` itself raises `ConnectionClosed`
+  (websockets' `ConnectionClosed` is NOT a `ConnectionError`, so `_transact`
+  catches both). Validated on-device 2026-06-15: a 20-command
   hammer acked sub-2s with zero duplicates/stalls.
 - **mDNS resolver needs the `zeroconf` dependency.** The coordinator imports
   `homeassistant.components.zeroconf` to resolve the device's `.local` address, so
@@ -105,7 +109,12 @@ fix two real, recurring failures. Don't revert these without understanding why:
 - **Pin-guard.** After a command, the affected fields are "pinned" for
   `COMMAND_PIN_SECONDS` so a stale device echo (or a racing confirmation ping)
   can't flap a just-commanded value back. A pin releases early the moment the
-  device confirms the value, so genuine later external changes still flow. The
+  device confirms the value, so genuine later external changes still flow.
+  Float fields are pinned **float32-rounded** (`_proto_float32`): the wire is
+  proto2 float32, so pinning the raw float64 command made the confirmation
+  equality fail for almost every real value and the pin silently held the full
+  window — keep the comparison exact-in-wire-precision, don't switch it to a
+  tolerance. The
   monotonic message id is **logging only**. Neither the device nor this
   integration correlates responses by it, so this time-based pin (not the id) is
   what prevents the flap.
@@ -158,7 +167,14 @@ fix two real, recurring failures. Don't revert these without understanding why:
   `user_connect` means the relay holds no session for the device, so retrying
   fast is pointless). Status is read defensively from the websockets exception
   (`InvalidStatus.response.status_code` on >= 13, `InvalidStatusCode.status_code`
-  on older builds) via `_handshake_status`.
+  on older builds) via `_handshake_status`. Two adjacent behaviors: **transient**
+  (non-auth) remote failures get the same log quieting (ERROR for the first few,
+  one WARNING, then debug via `_log_transient_connect_failure`) but with NO
+  attempt gating — the fast retry cadence is deliberately untouched. And a
+  remote connect holding a **hard-expired** access token (past JWT `exp`, not
+  merely in the 5-min refresh buffer) refreshes via `ensure_authenticated()`
+  before handshaking, so a drop coinciding with token expiry can't 401 its way
+  into the auth-reject cooldown.
 - **Dual transport: prefer local (LAN), fall back to remote (relay).** The cloud
   relay (`wss://remote.nanit.com/speakers/<uid>/user_connect/`) is laggy because
   it sits up while the physical device is idle behind it. On the same LAN the app
@@ -290,6 +306,13 @@ Addressed in the pre-release pass:
 - `websockets>=13.0` (we use the modern `additional_headers` connect API), and setup
   fails loudly on a protobuf import error. `protobuf` is left broad on purpose so
   it's satisfied by whatever HA ships rather than forcing a conflicting upgrade.
+- Every REST call carries an explicit 30s timeout (`REST_TIMEOUT`; the shared HA
+  session's default is 5 minutes), and `api.close()` awaits its cancelled
+  handler/reconnect tasks so a reload can't race the old instance's teardown.
+- There is **no silent password re-login and no in-band MFA repair flow** — both
+  were removed as dead code once the password stopped being persisted. Recovery
+  from a rejected refresh token is exactly: `needs_reauth()` →
+  `ConfigEntryAuthFailed` → the config-flow reauth (which handles MFA).
 - HACS hygiene: no `country` gate, `config.abort` strings, `integration_type`,
   info-spam demoted, emoji removed from logs.
 - Coordinator/entity behavior is covered by the `tests_ha/` Home Assistant fixture
