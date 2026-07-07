@@ -419,6 +419,41 @@ async def test_persistent_auth_reject_escalates_reconnect_interval(nsl, monkeypa
     assert delays[-1] == nsl.api.AUTH_REJECT_RETRY_INTERVAL
 
 
+async def test_repeated_transient_remote_failures_quiet_logs(nsl, monkeypatch, caplog):
+    """A remote transport failing transiently (refused/outage) logs ERROR only
+    for the first few attempts, then one WARNING, then debug. Only the log
+    level is throttled — every call below still attempts a real connect
+    (unlike the auth-reject cooldown, which short-circuits attempts)."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "test-token"
+    api._device_list = [DEVICE]
+    # Nothing listens here: every connect attempt fails fast (refused).
+    monkeypatch.setattr(nsl.api, "SOUND_LIGHT_WS_BASE_URL", "ws://127.0.0.1:1")
+    key = api._conn_key("baby123", "remote")
+
+    threshold = nsl.api.TRANSIENT_FAIL_LOG_THRESHOLD
+    attempts = threshold + 3
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(attempts):
+            await api._connect_transport(DEVICE, "remote")
+
+    assert api._transient_fail_counts[key] == attempts  # no attempt was skipped
+    api_errors = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR and r.name.endswith(".api")
+    ]
+    api_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name.endswith(".api")
+    ]
+    assert len(api_errors) == threshold - 1
+    assert len(api_warnings) == 1
+
+    await api.close()
+
+
 async def test_inflight_command_fails_fast_on_socket_drop(nsl, monkeypatch):
     """A command awaiting an ack is failed promptly when the socket drops,
     instead of waiting out the full ack timeout."""

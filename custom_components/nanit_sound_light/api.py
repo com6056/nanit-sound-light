@@ -154,6 +154,14 @@ AUTH_REJECT_RETRY_INTERVAL = 120  # seconds (2 min) once the threshold is crosse
 _AUTH_REJECT_STATUSES_LOCAL = frozenset({401, 403})
 _AUTH_REJECT_STATUSES_REMOTE = frozenset({401, 403, 404})
 
+# Transient (non-auth) connect failures — cloud outage, unplugged device, DNS —
+# get the same LOG quieting as auth rejects: ERROR for the first few, one
+# WARNING at the threshold, then debug. Only the log level is throttled; the
+# retry cadence (the fast app-matching backoff) is deliberately untouched, so
+# recovery latency is unchanged. Without this an extended outage produced one
+# ERROR per ~7s retry, thousands of lines overnight.
+TRANSIENT_FAIL_LOG_THRESHOLD = 4
+
 
 # Transports per device, in send-preference order: try LOCAL first (fast, direct
 # LAN), fall back to the REMOTE cloud relay. The app keeps both open on the same
@@ -299,6 +307,10 @@ class SoundLightAPI:
         # device. The reconnect loop's long sleep and this gate use the same
         # interval. Cleared on a successful connect.
         self._auth_reject_until: dict[str, float] = {}
+        # Consecutive transient (non-auth) connect-failure count per connection
+        # key. Drives log quieting only, never the retry cadence. Reset on a
+        # successful connect.
+        self._transient_fail_counts: dict[str, int] = {}
         # Strong refs to the per-connection message-handler tasks. asyncio only
         # holds a weak reference to a bare create_task() result, so without this
         # the handler could be garbage-collected mid-run and silently stop
@@ -1002,10 +1014,12 @@ class SoundLightAPI:
                 )
 
                 self._websockets[connection_key] = websocket
-                # Connected cleanly, so clear any persistent auth-rejection state
-                # for this transport (back to the fast backoff on a future drop).
+                # Connected cleanly, so clear any persistent auth-rejection and
+                # transient-failure state for this transport (back to the fast
+                # backoff and loud logging on a future drop).
                 self._auth_reject_counts.pop(connection_key, None)
                 self._auth_reject_until.pop(connection_key, None)
+                self._transient_fail_counts.pop(connection_key, None)
 
                 # A local socket is a direct LAN connection to the device, so
                 # connecting at all means the device is present and reachable.
@@ -1046,16 +1060,11 @@ class SoundLightAPI:
                 if status in reject_statuses:
                     self._handle_auth_reject(connection_key, transport, speaker_uid, e)
                 else:
-                    # Transient error (DNS, refused, timeout, mid-handshake drop).
-                    # Keep the fast app-matching backoff and the usual log level.
-                    log = (
-                        _LOGGER.debug if transport == TRANSPORT_LOCAL else _LOGGER.error
-                    )
-                    log(
-                        "Failed to connect to Sound + Light device %s via %s: %s",
-                        speaker_uid,
-                        transport,
-                        e,
+                    # Transient error (DNS, refused, timeout, mid-handshake
+                    # drop). Keeps the fast app-matching backoff; only the log
+                    # level is throttled.
+                    self._log_transient_connect_failure(
+                        connection_key, transport, speaker_uid, e
                     )
 
     def _handle_auth_reject(
@@ -1110,6 +1119,55 @@ class SoundLightAPI:
                 speaker_uid,
                 transport,
                 count,
+            )
+
+    def _log_transient_connect_failure(
+        self, connection_key: str, transport: str, speaker_uid: str, exc: Exception
+    ) -> None:
+        """Log a transient (non-auth) connect failure without flooding.
+
+        Mirrors _handle_auth_reject's shape: loud ERROR for the first few
+        attempts, one WARNING when we quiet down, then debug until the
+        transport reconnects (which resets the count). Only logging changes
+        here — the reconnect loop keeps its fast schedule, so an extended
+        cloud outage or an unplugged device can't fill the log at one ERROR
+        per retry. Local stays at debug always (best-effort, remote covers
+        control).
+        """
+        if transport == TRANSPORT_LOCAL:
+            _LOGGER.debug(
+                "Failed to connect to Sound + Light device %s via %s: %s",
+                speaker_uid,
+                transport,
+                exc,
+            )
+            return
+        count = self._transient_fail_counts.get(connection_key, 0) + 1
+        self._transient_fail_counts[connection_key] = count
+        if count < TRANSIENT_FAIL_LOG_THRESHOLD:
+            _LOGGER.error(
+                "Failed to connect to Sound + Light device %s via %s: %s",
+                speaker_uid,
+                transport,
+                exc,
+            )
+        elif count == TRANSIENT_FAIL_LOG_THRESHOLD:
+            _LOGGER.warning(
+                "Sound + Light device %s is still unreachable via %s after %d "
+                "attempts (%s). Still retrying on the same schedule, but "
+                "quieting these logs until it reconnects",
+                speaker_uid,
+                transport,
+                count,
+                exc,
+            )
+        else:
+            _LOGGER.debug(
+                "Sound + Light device %s still unreachable via %s (attempt %d): %s",
+                speaker_uid,
+                transport,
+                count,
+                exc,
             )
 
     async def connect_device(self, device_info: dict[str, Any]) -> None:
@@ -2146,6 +2204,7 @@ class SoundLightAPI:
         self._reconnect_tasks.clear()
         self._auth_reject_counts.clear()
         self._auth_reject_until.clear()
+        self._transient_fail_counts.clear()
         for task in self._handler_tasks.values():
             task.cancel()
         self._handler_tasks.clear()

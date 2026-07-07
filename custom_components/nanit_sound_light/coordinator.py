@@ -137,6 +137,8 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         # device never accepted.
         self._pinned_fields: dict[str, dict[str, tuple[Any, float]]] = {}
         self._rollback_snapshot: dict[str, dict[str, Any]] = {}
+        # One-shot flag so a broken zeroconf import warns once, not per connect.
+        self._zeroconf_import_warned = False
 
     @staticmethod
     def _has_usable_state(state: dict[str, Any]) -> bool:
@@ -291,7 +293,21 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
             from zeroconf import ServiceStateChange
             from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
             from zeroconf.const import _CLASS_IN, _TYPE_PTR
+        except ImportError as e:
+            # _CLASS_IN/_TYPE_PTR are private zeroconf API, so a zeroconf bump
+            # could remove them. Warn once (not per connect attempt) instead of
+            # the generic debug below — otherwise the local transport would
+            # silently vanish and every send would ride the laggy relay.
+            if not self._zeroconf_import_warned:
+                self._zeroconf_import_warned = True
+                _LOGGER.warning(
+                    "zeroconf internals unavailable (%s); the local (LAN) "
+                    "connection is disabled, staying on the cloud relay",
+                    e,
+                )
+            return None
 
+        try:
             aiozc = await ha_zeroconf.async_get_async_instance(self.hass)
             zc = aiozc.zeroconf
             uid = speaker_uid.lower()
