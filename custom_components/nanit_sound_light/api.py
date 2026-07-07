@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import websockets
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
@@ -1534,13 +1534,24 @@ class SoundLightAPI:
                         f"No ack for command id={message_id} on {baby_uid} "
                         f"within {COMMAND_ACK_TIMEOUT}s"
                     ) from e
-                except ConnectionError:
-                    # The socket dropped before the ack. If the device is still
-                    # reachable on the other transport, re-send there once.
-                    # Otherwise propagate so the caller rolls back.
+                except (ConnectionError, ConnectionClosed) as e:
+                    # The socket dropped before the ack — signalled either by
+                    # the handler failing the future (a real ConnectionError)
+                    # or by send() itself raising on a just-died socket
+                    # (websockets' ConnectionClosed, which is NOT a
+                    # ConnectionError subclass — without catching it here the
+                    # failover below never ran for a send-time drop). If the
+                    # device is still reachable on the other transport,
+                    # re-send there once. Otherwise normalize to
+                    # ConnectionError so the caller rolls back.
                     if attempt == 1 and self._any_transport_connected(baby_uid):
                         continue
-                    raise
+                    if isinstance(e, ConnectionError):
+                        raise
+                    raise ConnectionError(
+                        f"WebSocket closed sending command id={message_id} "
+                        f"on {baby_uid}"
+                    ) from e
                 finally:
                     self._pending_responses.get(baby_uid, {}).pop(message_id, None)
                     self._inflight_conn_key.pop(baby_uid, None)

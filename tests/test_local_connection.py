@@ -14,6 +14,7 @@ import asyncio
 import ssl
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
 
 from tests.test_websocket_reconnect import _FakeNanit, _wait_until
 
@@ -318,6 +319,42 @@ async def test_resends_on_surviving_transport_when_inflight_socket_drops(
     assert _has_control(nsl, remote, isOn=True)
 
     await api.close()
+    await remote.stop()
+
+
+async def test_send_time_close_fails_over_to_surviving_transport(nsl, monkeypatch):
+    """A socket that dies exactly at send time still fails over.
+
+    websockets' send() raises ConnectionClosed (NOT a ConnectionError) when the
+    socket dropped between _transact's liveness check and the write. That must
+    take the same re-send-on-the-surviving-transport path as a drop while
+    awaiting the ack, not escape as an unhandled exception (which read as a
+    rollback-worthy failure even though the device was reachable on remote).
+    """
+    api, local, remote = await _connect_both(nsl, monkeypatch)
+
+    await api.connect_device(DEVICE)
+    await _wait_until(lambda: api._transport_connected(_local_key(api)))
+    await _wait_until(lambda: api._transport_connected(_remote_key(api)))
+
+    local_ws = api._websockets[_local_key(api)]
+    real_close = local_ws.close
+
+    async def dying_send(_data):
+        # Close for real (so the liveness check sees CLOSED on the retry),
+        # then raise the way send() does on a just-closed connection.
+        await real_close()
+        raise ConnectionClosedError(None, None)
+
+    monkeypatch.setattr(local_ws, "send", dying_send)
+
+    # Must complete without raising: attempt 1 dies at send time on local,
+    # attempt 2 lands on remote and is acked.
+    await asyncio.wait_for(api.send_control_command("baby123", is_on=True), timeout=5)
+    assert _has_control(nsl, remote, isOn=True)
+
+    await api.close()
+    await local.stop()
     await remote.stop()
 
 
