@@ -9,11 +9,14 @@ import logging
 import secrets
 import ssl
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import websockets
 from websockets.exceptions import ConnectionClosedError
+
+if TYPE_CHECKING:
+    from websockets.asyncio.client import ClientConnection
 
 from .const import (
     NANIT_API_BASE,
@@ -239,12 +242,11 @@ class SoundLightAPI:
         self._local_enabled = local_enabled
         self._access_token: str | None = None
         self._refresh_token: str | None = None
-        self._password: str | None = None
         # Keyed by f"{baby_uid}{_KEY_SEP}{transport}". A device can have BOTH a
         # local and a remote socket open at once (the app does). Device-level
         # state (attachment, pending acks, send lock, sessionId) stays keyed by
         # baby_uid and is shared across a device's transports.
-        self._websockets: dict[str, websockets.WebSocketServerProtocol] = {}
+        self._websockets: dict[str, ClientConnection] = {}
         # Per-speaker local device token: speaker_uid -> (token, expires_at|None).
         # Distinct from the user access token. Only the LOCAL socket uses it.
         self._device_tokens: dict[str, tuple[str, float | None]] = {}
@@ -262,14 +264,9 @@ class SoundLightAPI:
         # Mirrors the app's AtomicInteger(0): first _next_message_id() returns 1.
         self._message_id = 0
         self._state_change_callback = None  # Callback for real-time updates
-        self._last_auth_failure = None  # Track last auth failure time
-        self._auth_retry_count = 0  # Track consecutive auth failures
-        self._max_retry_count = 3  # Max retries before requiring manual intervention
         self._token_update_callback = None  # Callback for token updates
         self._stored_email: str | None = None
         self._stored_password: str | None = None
-        self._pending_mfa_token: str | None = None  # Store MFA token when needed
-        self._mfa_required_callback = None  # Callback when MFA is required
         self._device_list: list[
             dict[str, Any]
         ] = []  # Store device info for reconnection
@@ -421,9 +418,6 @@ class SoundLightAPI:
                 return
 
         try:
-            # Store password for potential MFA verification
-            self._password = password
-
             # Initial authentication (let user choose MFA method if needed)
             auth_data = {"email": email, "password": password, "channel": "email"}
             headers = {"Content-Type": "application/json", "nanit-api-version": "1"}
@@ -481,14 +475,11 @@ class SoundLightAPI:
                                 _LOGGER.debug("Token update callback failed: %s", e)
 
                     if self._access_token:
-                        # Reset auth failure tracking on success
-                        self._last_auth_failure = None
-                        self._auth_retry_count = 0
                         _LOGGER.debug(
                             "Authentication successful for user: %s",
                             email.split("@")[0] + "@***",
                         )
-                        return {"success": True}
+                        return
 
                 elif response.status in [200, 482]:
                     # MFA required (482 is the actual MFA status code)
@@ -597,9 +588,6 @@ class SoundLightAPI:
                             "No access token received after MFA verification"
                         )
 
-                    # Reset auth failure tracking on successful MFA
-                    self._last_auth_failure = None
-                    self._auth_retry_count = 0
                     _LOGGER.debug(
                         "MFA verification successful for user: %s",
                         email.split("@")[0] + "@***",
@@ -666,9 +654,6 @@ class SoundLightAPI:
                                 await self._token_update_callback(new_refresh_token)
                             except Exception as e:
                                 _LOGGER.debug("Token update callback failed: %s", e)
-                    # Reset auth failure tracking on successful refresh
-                    self._last_auth_failure = None
-                    self._auth_retry_count = 0
                     _LOGGER.debug("Token refresh successful, authentication renewed")
                     return True
                 elif response.status == 404:
@@ -696,68 +681,6 @@ class SoundLightAPI:
 
         return False
 
-    def _should_attempt_auth(self) -> bool:
-        """Check if we should attempt authentication based on retry limits and timing."""
-        # If we haven't failed recently, allow auth attempt
-        if self._last_auth_failure is None:
-            return True
-
-        # Calculate time since last failure
-        time_since_failure = time.time() - self._last_auth_failure
-
-        # If we've hit max retries, require a longer wait period (30 minutes)
-        if self._auth_retry_count >= self._max_retry_count:
-            if time_since_failure < 1800:  # 30 minutes
-                remaining_minutes = (1800 - time_since_failure) / 60
-                _LOGGER.warning(
-                    "Authentication retry limit reached (%d attempts). "
-                    "Waiting %.1f more minutes to prevent MFA spam and protect your account",
-                    self._auth_retry_count,
-                    remaining_minutes,
-                )
-                return False
-            else:
-                # Reset retry count after waiting period
-                _LOGGER.debug(
-                    "Authentication retry wait period expired, resuming normal authentication"
-                )
-                self._auth_retry_count = 0
-                self._last_auth_failure = None
-                return True
-
-        # Exponential backoff for earlier retries (30s, 2min, 5min)
-        min_wait_times = [30, 120, 300]  # seconds
-        if self._auth_retry_count > 0:
-            min_wait = min_wait_times[
-                min(self._auth_retry_count - 1, len(min_wait_times) - 1)
-            ]
-            if time_since_failure < min_wait:
-                _LOGGER.debug(
-                    "Authentication backoff active. Wait %.1f more seconds",
-                    min_wait - time_since_failure,
-                )
-                return False
-
-        return True
-
-    def _record_auth_failure(self) -> None:
-        """Record an authentication failure for rate limiting."""
-        self._last_auth_failure = time.time()
-        self._auth_retry_count += 1
-
-        next_retry_info = (
-            "30 minutes"
-            if self._auth_retry_count >= self._max_retry_count
-            else f"{[30, 120, 300][min(self._auth_retry_count - 1, 2)]} seconds"
-        )
-
-        _LOGGER.warning(
-            " Authentication attempt %d/%d failed. Next retry allowed in %s",
-            self._auth_retry_count,
-            self._max_retry_count,
-            next_retry_info,
-        )
-
     async def ensure_authenticated(self) -> bool:
         """Ensure we have a valid access token, refreshing if needed."""
         # If we have a valid token that doesn't need refresh, return immediately
@@ -779,32 +702,9 @@ class SoundLightAPI:
             self._access_token = None
             self._token_expires_at = None
 
-        # If we don't have a valid token and should not attempt auth, return False
-        if not self._access_token and not self._should_attempt_auth():
-            return False
-
-        # If we have no token but stored credentials, try to re-authenticate
-        if not self._access_token and self.has_stored_credentials():
-            try:
-                await self.authenticate(
-                    self._stored_email, self._stored_password, self._refresh_token
-                )
-                return self._access_token is not None
-            except MfaRequiredError as mfa_error:
-                # Store MFA token and notify coordinator to trigger repair flow
-                self._pending_mfa_token = mfa_error.mfa_token
-                _LOGGER.info("MFA required for re-authentication")
-                if self._mfa_required_callback:
-                    try:
-                        await self._mfa_required_callback()
-                    except Exception as e:
-                        _LOGGER.debug("MFA required callback failed: %s", e)
-                return False
-            except AuthenticationError as e:
-                self._record_auth_failure()
-                _LOGGER.error("Re-authentication failed: %s", e)
-                return False
-
+        # There is no password on disk (deliberately), so there is no silent
+        # re-login fallback here: recovery from a rejected refresh token goes
+        # through needs_reauth() → ConfigEntryAuthFailed → the reauth flow.
         return self._access_token is not None
 
     async def _fetch_babies_with_retry(self) -> dict[str, Any]:
@@ -1775,7 +1675,7 @@ class SoundLightAPI:
             return False
 
     async def _handle_messages(
-        self, connection_key: str, websocket: websockets.WebSocketServerProtocol
+        self, connection_key: str, websocket: ClientConnection
     ) -> None:
         """Handle incoming WebSocket messages."""
         try:
@@ -2164,68 +2064,26 @@ class SoundLightAPI:
         """
         self._local_host_resolver = resolver
 
-    def set_mfa_required_callback(self, callback):
-        """Set callback function to be called when MFA is required during re-auth."""
-        self._mfa_required_callback = callback
-
-    def is_mfa_pending(self) -> bool:
-        """Check if MFA authentication is pending."""
-        return self._pending_mfa_token is not None
-
     def needs_reauth(self) -> bool:
         """True when recovery requires the user to re-authenticate.
 
-        Either MFA is pending, or we hold no usable token (the refresh token
-        was rejected or never issued) and have no stored password to silently
-        re-authenticate with. A transient network error during refresh leaves
-        the refresh token in place, so this stays False and the caller can keep
-        using cached data instead of forcing a reauth.
+        We hold no usable token (the refresh token was rejected or never
+        issued) and have no stored password to silently re-authenticate with.
+        A transient network error during refresh leaves the refresh token in
+        place, so this stays False and the caller can keep using cached data
+        instead of forcing a reauth.
         """
-        if self._pending_mfa_token is not None:
-            return True
         return (
             self._access_token is None
             and self._refresh_token is None
             and not self.has_stored_credentials()
         )
 
-    async def complete_pending_mfa(self, mfa_code: str) -> bool:
-        """Complete pending MFA authentication."""
-        if not self._pending_mfa_token:
-            _LOGGER.error("No pending MFA authentication")
-            return False
-
-        if not self.has_stored_credentials():
-            _LOGGER.error("No stored credentials for MFA completion")
-            return False
-
-        try:
-            await self.complete_mfa_authentication(
-                self._stored_email,
-                self._stored_password,
-                self._pending_mfa_token,
-                mfa_code,
-            )
-            # Clear pending MFA state on success
-            self._pending_mfa_token = None
-            # Reset auth failure tracking on successful MFA
-            self._last_auth_failure = None
-            self._auth_retry_count = 0
-            return True
-        except AuthenticationError as e:
-            _LOGGER.error("Pending MFA completion failed: %s", e)
-            # Don't clear pending state on failure, allow retry
-            return False
-
     def clear_auth_data(self) -> None:
         """Clear sensitive authentication data."""
         self._access_token = None
         self._refresh_token = None
-        self._password = None
-        self._pending_mfa_token = None
         self._token_expires_at = None  # Clear token expiration tracking
-        # Keep stored email/password for re-auth, but clear temp password and MFA state
-        # Only clear if explicitly called (not during normal refresh)
 
     async def send_saved_sounds_request(self, baby_uid: str) -> None:
         """Request available sound list from device."""

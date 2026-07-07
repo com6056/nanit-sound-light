@@ -68,11 +68,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         if coordinator is not None:
             await coordinator.async_close()
-        # Clear any pending MFA notification for this entry.
-        await hass.services.async_call(
-            "persistent_notification",
-            "dismiss",
-            {"notification_id": f"nanit_mfa_{entry.entry_id}"},
-        )
 
     return unload_ok
