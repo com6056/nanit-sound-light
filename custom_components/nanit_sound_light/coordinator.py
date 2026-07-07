@@ -354,10 +354,13 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         """
         _LOGGER.debug(
             "Queuing command for %s: %s",
-            (
-                self._devices[0]["speaker_name"]
-                if self._devices
-                else baby_uid[:8] + "..."
+            next(
+                (
+                    d["speaker_name"]
+                    for d in self._devices
+                    if d.get("baby_uid") == baby_uid
+                ),
+                baby_uid[:8] + "...",
             ),
             (
                 {k: v for k, v in kwargs.items() if k != "color"}

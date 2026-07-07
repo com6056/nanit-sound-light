@@ -25,13 +25,13 @@ async def async_setup_entry(
     """Set up Nanit Sound + Light light entities."""
     coordinator: NanitSoundLightCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
-    entities = []
-
-    # Create light entity for each device
-    if coordinator.data and "devices" in coordinator.data:
-        for device_uid, device_data in coordinator.data["devices"].items():
-            entities.append(NanitSoundLightLight(coordinator, device_uid, device_data))
-
+    # Create from the device list (like sensor/binary_sensor), not from
+    # coordinator.data: a device whose first poll body failed would be missing
+    # from data and would never get its control entities.
+    entities = [
+        NanitSoundLightLight(coordinator, device["baby_uid"], device)
+        for device in coordinator._devices
+    ]
     async_add_entities(entities)
 
 

@@ -25,15 +25,13 @@ async def async_setup_entry(
     """Set up Nanit Sound + Light select entities."""
     coordinator: NanitSoundLightCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
-    entities = []
-
-    # Create sound selection entity for each device
-    if coordinator.data and "devices" in coordinator.data:
-        for device_uid, device_data in coordinator.data["devices"].items():
-            entities.append(
-                NanitSoundLightSoundSelect(coordinator, device_uid, device_data)
-            )
-
+    # Create from the device list (like sensor/binary_sensor), not from
+    # coordinator.data: a device whose first poll body failed would be missing
+    # from data and would never get its control entities.
+    entities = [
+        NanitSoundLightSoundSelect(coordinator, device["baby_uid"], device)
+        for device in coordinator._devices
+    ]
     async_add_entities(entities)
 
 
@@ -72,8 +70,13 @@ class NanitSoundLightSoundSelect(NanitSoundLightEntity, SelectEntity):
         device_data = self._get_device_data()
         current_sound = device_data.get("current_sound")
 
-        # Handle valid sounds in our dynamic list
+        # No sound list from the device yet: report unknown rather than an
+        # option that isn't in the (empty) options list.
         available_options = self.options
+        if not available_options:
+            return None
+
+        # Handle valid sounds in our dynamic list
         if current_sound in available_options:
             return current_sound
 
