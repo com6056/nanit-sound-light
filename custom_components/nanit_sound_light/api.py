@@ -961,6 +961,20 @@ class SoundLightAPI:
 
             if transport == TRANSPORT_REMOTE:
                 ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
+                # A HARD-expired access token (past its JWT exp, not merely
+                # inside the pre-expiry refresh buffer) makes this handshake a
+                # guaranteed 401 — which counts toward the auth-reject backoff
+                # and can cool the transport down for minutes before the 30s
+                # poll rotates the token. Refresh first. Only the
+                # refresh-token path can run here (no password is stored on
+                # this instance). A buffer-window token that is still valid is
+                # used as-is, so a transient refresh failure can't block a
+                # connect that would have succeeded.
+                if (
+                    self._token_expires_at is not None
+                    and time.time() >= self._token_expires_at
+                ):
+                    await self.ensure_authenticated()
                 token = self._access_token
             else:  # local
                 ws_url = self._local_ws_url(speaker_uid)

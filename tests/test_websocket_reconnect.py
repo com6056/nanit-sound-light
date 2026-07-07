@@ -65,11 +65,13 @@ class _FakeNanit:
         self.handshakes = 0
         self.received: list[bytes] = []
         self.connections: list = []
+        self.auth_headers: list[str | None] = []
         self._server = None
         self.port = 0
 
     async def _process_request(self, connection, request):
         """Reject the handshake with an HTTP status, or return None to accept."""
+        self.auth_headers.append(request.headers.get("Authorization"))
         if self._reject_status is None:
             return None
         self.handshakes += 1
@@ -417,6 +419,59 @@ async def test_persistent_auth_reject_escalates_reconnect_interval(nsl, monkeypa
     assert delays[0] != nsl.api.AUTH_REJECT_RETRY_INTERVAL  # started on fast backoff
     assert nsl.api.AUTH_REJECT_RETRY_INTERVAL in delays  # escalated to the long one
     assert delays[-1] == nsl.api.AUTH_REJECT_RETRY_INTERVAL
+
+
+async def test_hard_expired_token_refreshes_before_remote_connect(
+    nsl, fake_nanit, monkeypatch
+):
+    """A remote connect holding a hard-expired access token refreshes it first
+    instead of handshaking into a guaranteed 401 (which would count toward the
+    auth-reject backoff and could cool the transport down for minutes)."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "stale-token"
+    api._token_expires_at = 1.0  # long past its exp
+    api._device_list = [DEVICE]
+
+    async def fake_ensure():
+        api._access_token = "fresh-token"
+        api._token_expires_at = nsl.api.time.time() + 3600
+        return True
+
+    monkeypatch.setattr(api, "ensure_authenticated", fake_ensure)
+
+    await api.connect_device(DEVICE)
+    assert api.is_websocket_connected("baby123")
+    # The handshake presented the refreshed token, not the stale one.
+    assert fake_nanit.auth_headers[-1] == "token fresh-token"
+
+    await api.close()
+
+
+async def test_buffer_window_token_connects_without_refresh(
+    nsl, fake_nanit, monkeypatch
+):
+    """A token merely inside the pre-expiry refresh buffer (still VALID) is
+    used as-is. The poll rotates it; a transient refresh failure here must not
+    block a connect that would have succeeded with the current token."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "still-valid"
+    api._token_expires_at = nsl.api.time.time() + 60  # inside the 300s buffer
+    api._device_list = [DEVICE]
+
+    called = {"ensure": False}
+
+    async def fake_ensure():
+        called["ensure"] = True
+        return True
+
+    monkeypatch.setattr(api, "ensure_authenticated", fake_ensure)
+
+    await api.connect_device(DEVICE)
+    assert api.is_websocket_connected("baby123")
+    assert called["ensure"] is False  # no pre-connect refresh for a valid token
+    assert fake_nanit.auth_headers[-1] == "token still-valid"
+
+    await api.close()
 
 
 async def test_repeated_transient_remote_failures_quiet_logs(nsl, monkeypatch, caplog):
