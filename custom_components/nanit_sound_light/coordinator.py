@@ -59,7 +59,7 @@ def _proto_float32(value: Any) -> Any:
     (32-bit). We command a Python float64, but the device's echo comes back
     float32-rounded, so pinning the raw float64 made the confirmation equality
     in _merge_device_state fail for almost every real value (only exact dyadic
-    values like 0.0/0.5/1.0 survive the round-trip) — the pin then always held
+    values like 0.0/0.5/1.0 survive the round-trip). The pin then always held
     the full COMMAND_PIN_SECONDS cap and "releases early on confirmation"
     never actually happened for float fields. Pinning the float32-rounded
     value keeps the comparison EXACT (no tolerance, so no false confirmation)
@@ -315,7 +315,7 @@ class NanitSoundLightCoordinator(DataUpdateCoordinator):
         except ImportError as e:
             # _CLASS_IN/_TYPE_PTR are private zeroconf API, so a zeroconf bump
             # could remove them. Warn once (not per connect attempt) instead of
-            # the generic debug below — otherwise the local transport would
+            # the generic debug below. Otherwise the local transport would
             # silently vanish and every send would ride the laggy relay.
             if not self._zeroconf_import_warned:
                 self._zeroconf_import_warned = True

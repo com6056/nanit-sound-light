@@ -492,7 +492,7 @@ async def test_buffer_window_token_connects_without_refresh(
 async def test_repeated_transient_remote_failures_quiet_logs(nsl, monkeypatch, caplog):
     """A remote transport failing transiently (refused/outage) logs ERROR only
     for the first few attempts, then one WARNING, then debug. Only the log
-    level is throttled — every call below still attempts a real connect
+    level is throttled. Every call below still attempts a real connect
     (unlike the auth-reject cooldown, which short-circuits attempts)."""
     api = nsl.api.SoundLightAPI(session=None)
     api._access_token = "test-token"

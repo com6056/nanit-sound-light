@@ -161,9 +161,9 @@ AUTH_REJECT_RETRY_INTERVAL = 120  # seconds (2 min) once the threshold is crosse
 _AUTH_REJECT_STATUSES_LOCAL = frozenset({401, 403})
 _AUTH_REJECT_STATUSES_REMOTE = frozenset({401, 403, 404})
 
-# Transient (non-auth) connect failures — cloud outage, unplugged device, DNS —
+# Transient (non-auth) connect failures (cloud outage, unplugged device, DNS)
 # get the same LOG quieting as auth rejects: ERROR for the first few, one
-# WARNING at the threshold, then debug. Only the log level is throttled; the
+# WARNING at the threshold, then debug. Only the log level is throttled. The
 # retry cadence (the fast app-matching backoff) is deliberately untouched, so
 # recovery latency is unchanged. Without this an extended outage produced one
 # ERROR per ~7s retry, thousands of lines overnight.
@@ -226,9 +226,10 @@ class CommandTimeoutError(ConnectionError):
     distinct so the sender can tell a slow/absent ack apart from a socket drop
     or an explicit device rejection. The distinction matters because the
     responses are OPPOSITE: a timeout on a live socket is accepted
-    optimistically and must NOT re-send (duplicates wedge a busy device; the
-    retry that once lived here was removed for exactly that, see CLAUDE.md),
-    while a drop or rejection propagates so the coordinator rolls back.
+    optimistically and must NOT re-send (duplicates wedge a busy device, and
+    the retry that once lived here was removed for exactly that, see
+    CLAUDE.md), while a drop or rejection propagates so the coordinator rolls
+    back.
     """
 
 
@@ -976,7 +977,7 @@ class SoundLightAPI:
                 ws_url = f"{SOUND_LIGHT_WS_BASE_URL}/{speaker_uid}/user_connect/"
                 # A HARD-expired access token (past its JWT exp, not merely
                 # inside the pre-expiry refresh buffer) makes this handshake a
-                # guaranteed 401 — which counts toward the auth-reject backoff
+                # guaranteed 401, which counts toward the auth-reject backoff
                 # and can cool the transport down for minutes before the 30s
                 # poll rotates the token. Refresh first. Only the
                 # refresh-token path can run here (no password is stored on
@@ -1088,7 +1089,7 @@ class SoundLightAPI:
                     self._handle_auth_reject(connection_key, transport, speaker_uid, e)
                 else:
                     # Transient error (DNS, refused, timeout, mid-handshake
-                    # drop). Keeps the fast app-matching backoff; only the log
+                    # drop). Keeps the fast app-matching backoff. Only the log
                     # level is throttled.
                     self._log_transient_connect_failure(
                         connection_key, transport, speaker_uid, e
@@ -1156,7 +1157,7 @@ class SoundLightAPI:
         Mirrors _handle_auth_reject's shape: loud ERROR for the first few
         attempts, one WARNING when we quiet down, then debug until the
         transport reconnects (which resets the count). Only logging changes
-        here — the reconnect loop keeps its fast schedule, so an extended
+        here. The reconnect loop keeps its fast schedule, so an extended
         cloud outage or an unplugged device can't fill the log at one ERROR
         per retry. Local stays at debug always (best-effort, remote covers
         control).
@@ -1562,11 +1563,11 @@ class SoundLightAPI:
                         f"within {COMMAND_ACK_TIMEOUT}s"
                     ) from e
                 except (ConnectionError, ConnectionClosed) as e:
-                    # The socket dropped before the ack — signalled either by
+                    # The socket dropped before the ack, signalled either by
                     # the handler failing the future (a real ConnectionError)
                     # or by send() itself raising on a just-died socket
                     # (websockets' ConnectionClosed, which is NOT a
-                    # ConnectionError subclass — without catching it here the
+                    # ConnectionError subclass. Without catching it here the
                     # failover below never ran for a send-time drop). If the
                     # device is still reachable on the other transport,
                     # re-send there once. Otherwise normalize to
