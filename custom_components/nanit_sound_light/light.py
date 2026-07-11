@@ -59,22 +59,28 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
     def is_on(self) -> bool:
         """Return true if the light is emitting.
 
-        The light is on whenever the device is powered AND brightness > 0.
-        `no_color` is NOT part of this. On the real device it means "white"
-        (no hue) vs a colored hue, not "light off" (verified on-device: the light
-        runs at full brightness with no_color=true). The earlier no_color-based
-        on/off was an unverified RE assumption and made the entity read off while
-        the light was physically on (e.g. after a power cycle).
+        The lamp emits iff the device is powered AND brightness > 0 AND color
+        is enabled (`no_color` false). All three gates validated on-device
+        2026-07-11 with bare single-field frames: `noColor:true` is the Nanit
+        app's own "Light off" toggle and darkens the lamp while RETAINING the
+        brightness value underneath, so gating on power + brightness alone
+        misread an app-side "Light off" as still on in HA.
         """
         device_data = self._get_device_data()
         device_power_on = device_data.get("is_on", False)
-        is_light_on = device_power_on and device_data.get("brightness", 0.0) > 0
+        is_light_on = (
+            device_power_on
+            and device_data.get("brightness", 0.0) > 0
+            and not device_data.get("no_color", False)
+        )
 
         _LOGGER.debug(
-            "Light state for %s: device_power=%s, brightness=%.2f → light_on=%s",
+            "Light state for %s: device_power=%s, brightness=%.2f, no_color=%s "
+            "→ light_on=%s",
             self._device_uid,
             device_power_on,
             device_data.get("brightness", 0.0),
+            device_data.get("no_color", False),
             is_light_on,
         )
 
@@ -226,11 +232,12 @@ class NanitSoundLightLight(NanitSoundLightEntity, LightEntity):
         """Turn the light off by dimming to brightness 0, leaving the device on so
         sound keeps playing.
 
-        color.noColor does NOT darken the light (it is white versus color, verified
-        on-device), so the old noColor:true off-command was a no-op for the light.
-        Brightness 0 is the real "light off while the device stays on". The switch
-        still owns whole-device power (isOn). build_control_message leaves the
-        stored color and hue untouched, so they return on turn-on.
+        Deliberately NOT the app's `noColor:true` off: both darken the lamp
+        (validated on-device 2026-07-11), but brightness-0 round-trips the
+        device's stored color, while re-enabling from a `noColor` off lands on
+        white unless hue/sat are re-sent in the same frame. The switch still
+        owns whole-device power (isOn). build_control_message leaves the stored
+        color and hue untouched, so they return on turn-on.
         """
         _LOGGER.debug("Light turn OFF requested for %s", self._device_uid)
         await self.coordinator.async_send_control_command(

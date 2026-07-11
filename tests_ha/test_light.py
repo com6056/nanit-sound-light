@@ -31,6 +31,20 @@ async def test_light_off_dims_to_zero_keeping_power(hass, coordinator):
     assert kwargs == {"brightness": 0.0}  # only brightness, power/sound untouched
 
 
+async def test_app_side_light_off_reads_as_off(hass, coordinator):
+    """noColor:true is the Nanit app's "Light off": it darkens the lamp while
+    RETAINING brightness underneath (on-device 2026-07-11). is_on must gate on
+    no_color too, or an app-side "Light off" shows as still on in HA."""
+    coordinator.data["devices"]["baby1"].update(
+        {"is_on": True, "brightness": 0.8, "no_color": True}
+    )
+    assert _light(coordinator).is_on is False
+
+    # Color re-enabled -> emitting again.
+    coordinator.data["devices"]["baby1"]["no_color"] = False
+    assert _light(coordinator).is_on is True
+
+
 async def test_turn_on_restores_device_color_when_no_stored_color(hass, coordinator):
     """After a restart cleared _last_colors, turning the light on must still
     clear no_color (using the device's retained hue/sat), not be a no-op."""

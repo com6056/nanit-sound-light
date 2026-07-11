@@ -1416,10 +1416,13 @@ class SoundLightAPI:
         if "color" in kwargs:
             color_info = kwargs["color"]
             color_data = Color()
-            # Only set the color sub-fields actually provided. A light-off
-            # command sends a bare {noColor: true} and must NOT carry hue=0/
-            # saturation=0, which would clobber the device's stored color (the
-            # last-color restore relies on it surviving an off/on cycle).
+            # Only set the color sub-fields actually provided. A bare
+            # {noColor: true} frame (the app's "Light off") must NOT carry
+            # hue=0/saturation=0, which would overwrite the device's stored
+            # color. Validated 2026-07-11: a brightness-0 off/on cycle
+            # round-trips the stored color, but a bare noColor:false does NOT
+            # restore it (lands on white), which is why turn_on always sends
+            # explicit hue/sat.
             if "noColor" in color_info:
                 color_data.noColor = color_info["noColor"]
             if "hue" in color_info:

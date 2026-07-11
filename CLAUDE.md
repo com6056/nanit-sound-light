@@ -122,17 +122,27 @@ fix two real, recurring failures. Don't revert these without understanding why:
   snappy UI, and a failed send rolls that back so the UI never shows a state the
   device didn't accept.
 - **Power vs light on/off.** The device has a single power primitive, `isOn`,
-  owned by the **switch** (`switch.turn_on/off` sends a bare `Settings{isOn}`). The
-  **light** turns off by dimming to `brightness:0` so white noise keeps playing,
-  leaving whole-device power to the switch. `color.noColor` is white-versus-color,
-  NOT light on/off (verified on-device), so `light.turn_off` sends a bare
-  `Settings{brightness:0}`, not a `noColor` write. The light's `is_on` is therefore
-  "device powered AND brightness > 0". `build_control_message` omits any color
-  sub-field not provided, so the device's stored color survives an off/on cycle.
-  `light.turn_on` keeps the "set `sound:'No sound'` when the device was off" guard
-  so flipping the light on
-  doesn't unexpectedly resume audio (intentional divergence from the app, which
-  sends bare `isOn`).
+  owned by the **switch** (`switch.turn_on/off` sends a bare `Settings{isOn}`).
+  The light state machine, validated on-device 2026-07-11 with bare
+  single-field frames plus official-app corroboration: **the lamp emits iff
+  `isOn && brightness > 0 && !noColor`**. `color.noColor` is the app's own
+  "Light off" toggle AND the white selector in one: `noColor:true` darkens the
+  lamp while RETAINING brightness underneath (brightness writes while dark get
+  stored, the lamp stays off), and a bare `noColor:false` relights in WHITE.
+  The device does NOT restore its previous color on re-enable, color returns
+  only when hue/sat ride in the same frame. (An earlier version of this bullet
+  claimed `noColor` was white-versus-color and NOT light off, "verified
+  on-device". That was wrong, likely a validation polluted by the old combined
+  off-encoding.) Consequences baked into the code: the light's `is_on` gates on
+  all three fields, and `light.turn_off` still sends `Settings{brightness:0}`
+  deliberately, since brightness-0 is an app-legitimate off state that
+  round-trips the stored color while the app's `noColor` off does not.
+  `build_control_message` omits any color sub-field not provided, so a bare
+  `noColor` frame can't clobber the stored hue/sat. `light.turn_on` always
+  sends explicit hue/sat (the only reliable restore against the `noColor`
+  path) and keeps the "set `sound:'No sound'` when the device was off" guard
+  so flipping the light on doesn't unexpectedly resume audio (intentional
+  divergence from the app, which sends bare `isOn`).
 - **WebSocket keepalive / reconnect.** The device keeps its socket alive with
   **protocol-level ping/pong (~20s)**. There is no app-level keepalive frame, so
   rely on the WS ping (`WS_PING_INTERVAL`), don't invent a heartbeat message. On a
