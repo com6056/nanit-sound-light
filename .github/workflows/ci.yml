@@ -63,6 +63,25 @@ jobs:
           category: integration
           ignore: brands
 
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install mypy + runtime deps
+        run: pip install mypy aiohttp "websockets>=13.0" "protobuf>=3.19.0"
+
+      # Strict typing for the transport module (api.py), the part that ports
+      # into ha-nanit whose CI runs mypy --strict. Scope lives in mypy.ini.
+      - name: mypy (strict, transport module)
+        run: mypy
+
   tests:
     runs-on: ubuntu-latest
     steps:

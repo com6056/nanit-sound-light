@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
 import secrets
 import ssl
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -35,7 +37,7 @@ _REDACTED_RESPONSE_KEYS = frozenset(
 )
 
 
-def _clean_device_string(value, max_len: int = 64) -> str | None:
+def _clean_device_string(value: object, max_len: int = 64) -> str | None:
     """Clamp and filter an untrusted device-provided string for safe display.
 
     Device and cloud strings (SSID, BSSID, firmware version) are surfaced as
@@ -48,7 +50,7 @@ def _clean_device_string(value, max_len: int = 64) -> str | None:
     return value if value.isprintable() and value.strip() else None
 
 
-def _redact_response_for_log(body: str | dict) -> str:
+def _redact_response_for_log(body: str | bytes | dict[str, Any]) -> str:
     """Return a debug-safe representation of an auth response.
 
     The Nanit /login endpoint returns access_token / refresh_token /
@@ -198,22 +200,22 @@ except ImportError as e:
     _LOGGER.error("Failed to import protobuf classes: %s", e)
 
     # Create dummy classes to prevent import errors
-    class Color:
+    class Color:  # type: ignore[no-redef]
         pass
 
-    class GetSettings:
+    class GetSettings:  # type: ignore[no-redef]
         pass
 
-    class Message:
+    class Message:  # type: ignore[no-redef]
         pass
 
-    class Request:
+    class Request:  # type: ignore[no-redef]
         pass
 
-    class Settings:
+    class Settings:  # type: ignore[no-redef]
         pass
 
-    class Sound:
+    class Sound:  # type: ignore[no-redef]
         pass
 
     PROTOBUF_AVAILABLE = False
@@ -270,21 +272,24 @@ class SoundLightAPI:
         # Per-speaker local device token: speaker_uid -> (token, expires_at|None).
         # Distinct from the user access token. Only the LOCAL socket uses it.
         self._device_tokens: dict[str, tuple[str, float | None]] = {}
-        # Optional async resolver: speaker_uid -> LAN IPv4 (or None). Injected by
+        # Optional async resolver: speaker_uid -> LAN IPv4 (or None), typed
+        # below at first assignment. Injected by
         # the coordinator (HA's zeroconf), because a HA install in a container
         # usually can't resolve `.local` via libc (no nss-mdns). It finds the
         # device's mDNS service by uid and returns its IP. When unset we fall back
         # to handing the deterministic `.local` name to the OS resolver (works on
         # HA OS / hosts with nss-mdns). Signature: async (speaker_uid) -> str|None.
-        self._local_host_resolver = None
+        self._local_host_resolver: Callable[[str], Awaitable[str | None]] | None = None
         # Which transport a device's one in-flight command went out on, so a
         # redundant socket dropping doesn't fail a command acked on the other.
         self._inflight_conn_key: dict[str, str] = {}
         self._device_state: dict[str, dict[str, Any]] = {}
         # Mirrors the app's AtomicInteger(0): first _next_message_id() returns 1.
         self._message_id = 0
-        self._state_change_callback = None  # Callback for real-time updates
-        self._token_update_callback = None  # Callback for token updates
+        # Callback for real-time updates (called with baby_uid).
+        self._state_change_callback: Callable[[str], Awaitable[None]] | None = None
+        # Callback for rotated refresh tokens.
+        self._token_update_callback: Callable[[str], Awaitable[None]] | None = None
         self._stored_email: str | None = None
         self._stored_password: str | None = None
         self._device_list: list[
@@ -301,7 +306,7 @@ class SoundLightAPI:
         # connection key (`baby_uid{_KEY_SEP}transport`).
         self._closing = False
         self._connect_locks: dict[str, asyncio.Lock] = {}
-        self._reconnect_tasks: dict[str, asyncio.Task] = {}
+        self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
         # Consecutive auth-rejection (401/403, or relay 404) count per connection
         # key. Drives the long, quiet retry interval for a transport whose
         # handshake keeps being refused (e.g. a wedged device). Reset on a
@@ -323,7 +328,7 @@ class SoundLightAPI:
         # holds a weak reference to a bare create_task() result, so without this
         # the handler could be garbage-collected mid-run and silently stop
         # delivering device pushes.
-        self._handler_tasks: dict[str, asyncio.Task] = {}
+        self._handler_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Backend readiness gate. The device's first frame after a remote connect
         # is Message{backend} reporting whether the physical device is attached
@@ -340,7 +345,7 @@ class SoundLightAPI:
         # send registers a future keyed by its message id, and the message handler
         # resolves it when the matching Response arrives (drain each response).
         self._send_locks: dict[str, asyncio.Lock] = {}
-        self._pending_responses: dict[str, dict[int, asyncio.Future]] = {}
+        self._pending_responses: dict[str, dict[int, asyncio.Future[int]]] = {}
 
         # Random per-device sessionId, mirroring the app (a per-launch
         # SecureRandom token). Created once per API lifetime and reused across
@@ -397,7 +402,7 @@ class SoundLightAPI:
                     return None
 
             except (
-                base64.binascii.Error,
+                binascii.Error,
                 json.JSONDecodeError,
                 UnicodeDecodeError,
             ) as e:
@@ -746,7 +751,8 @@ class SoundLightAPI:
             NANIT_BABIES_URL, headers=headers, timeout=REST_TIMEOUT
         ) as response:
             if response.status == 200:
-                return await response.json()
+                data: dict[str, Any] = await response.json()
+                return data
             if response.status == 401:
                 # Try to refresh and retry once.
                 if not await self._refresh_auth():
@@ -760,7 +766,8 @@ class SoundLightAPI:
             NANIT_BABIES_URL, headers=headers, timeout=REST_TIMEOUT
         ) as retry_response:
             if retry_response.status == 200:
-                return await retry_response.json()
+                retry_data: dict[str, Any] = await retry_response.json()
+                return retry_data
             raise Exception(
                 f"Failed to get devices after refresh: {retry_response.status}"
             )
@@ -1077,7 +1084,7 @@ class SoundLightAPI:
                 )
                 self._handler_tasks[connection_key] = task
                 task.add_done_callback(
-                    lambda _t, key=connection_key: self._handler_tasks.pop(key, None)
+                    lambda _t: self._handler_tasks.pop(connection_key, None)
                 )
 
                 # Nothing else to send on open. The app sends nothing until the
@@ -1376,7 +1383,7 @@ class SoundLightAPI:
         except asyncio.TimeoutError:
             return False
 
-    def _resolve_pending_response(self, baby_uid: str, response) -> None:
+    def _resolve_pending_response(self, baby_uid: str, response: Any) -> None:
         """Resolve the awaiting send (if any) for an inbound Response by requestId.
 
         Mirrors the app's correlation: a Response carries the requestId of the
@@ -1399,7 +1406,7 @@ class SoundLightAPI:
                 future.set_exception(error)
 
     def build_control_message(
-        self, session_id: str | None = None, **kwargs
+        self, session_id: str | None = None, **kwargs: Any
     ) -> tuple[bytes, int]:
         """Build a serialized control Message from the given fields.
 
@@ -1464,7 +1471,7 @@ class SoundLightAPI:
 
         return message.SerializeToString(), message_id
 
-    async def send_control_command(self, baby_uid: str, **kwargs) -> None:
+    async def send_control_command(self, baby_uid: str, **kwargs: Any) -> None:
         """Send one control command and await the device's ack, like the app.
 
         Mirrors the official app's transaction model (SocketRequestManager): one
@@ -1553,13 +1560,17 @@ class SoundLightAPI:
                 websocket = (
                     self._websockets.get(connection_key) if connection_key else None
                 )
-                if websocket is None or self._is_websocket_closed(websocket):
+                if (
+                    connection_key is None
+                    or websocket is None
+                    or self._is_websocket_closed(websocket)
+                ):
                     self._schedule_reconnect(baby_uid)
                     raise ConnectionError(
                         f"WebSocket closed before sending request for {baby_uid}"
                     )
 
-                future: asyncio.Future = asyncio.get_running_loop().create_future()
+                future: asyncio.Future[int] = asyncio.get_running_loop().create_future()
                 self._pending_responses.setdefault(baby_uid, {})[message_id] = future
                 # Track the transport this in-flight command went out on so the
                 # handler only fails it when THIS socket drops, not a redundant one.
@@ -1605,6 +1616,12 @@ class SoundLightAPI:
                         f"status {status_code}"
                     )
                 return status_code
+
+            # Attempt 2 never `continue`s, so this is unreachable in practice;
+            # it keeps the declared return type honest.
+            raise ConnectionError(
+                f"Command id={message_id} on {baby_uid} exhausted both transports"
+            )
 
     async def _send_no_wait(self, baby_uid: str, message_bytes: bytes) -> None:
         """Send a best-effort request under the per-device lock, WITHOUT awaiting
@@ -1684,7 +1701,9 @@ class SoundLightAPI:
         except Exception as e:
             _LOGGER.error("Failed to send status request: %s", e)
 
-    async def _send_query(self, baby_uid: str, mutate_request) -> None:
+    async def _send_query(
+        self, baby_uid: str, mutate_request: Callable[[Any], None]
+    ) -> None:
         """Build a diagnostics Request via `mutate_request` and send best-effort.
 
         Battery/wifi/firmware ride their own query request types (GetStatus /
@@ -1715,7 +1734,7 @@ class SoundLightAPI:
     async def send_status_request(self, baby_uid: str) -> None:
         """Poll battery (+ temp/humidity) via GetStatus(all=true)."""
 
-        def _mutate(request) -> None:
+        def _mutate(request: Any) -> None:
             request.getStatus.all = True
 
         await self._send_query(baby_uid, _mutate)
@@ -1723,7 +1742,7 @@ class SoundLightAPI:
     async def send_network_request(self, baby_uid: str) -> None:
         """Poll the current WiFi access point via Network{getStatus}."""
 
-        def _mutate(request) -> None:
+        def _mutate(request: Any) -> None:
             request.network.getStatus.SetInParent()  # present-but-empty marker
 
         await self._send_query(baby_uid, _mutate)
@@ -1731,12 +1750,12 @@ class SoundLightAPI:
     async def send_firmware_request(self, baby_uid: str) -> None:
         """Fetch the firmware version via Firmware{info}."""
 
-        def _mutate(request) -> None:
+        def _mutate(request: Any) -> None:
             request.firmware.info.SetInParent()  # present-but-empty marker
 
         await self._send_query(baby_uid, _mutate)
 
-    def _is_websocket_closed(self, websocket) -> bool:
+    def _is_websocket_closed(self, websocket: Any) -> bool:
         """Check if websocket is closed, handling different websocket library versions."""
         if websocket is None:
             return True
@@ -1744,7 +1763,7 @@ class SoundLightAPI:
         try:
             # Try the standard method first
             if hasattr(websocket, "closed"):
-                return websocket.closed
+                return bool(websocket.closed)
 
             # For newer websockets library versions, check state
             if hasattr(websocket, "state"):
@@ -1845,7 +1864,7 @@ class SoundLightAPI:
 
     @staticmethod
     def _parse_settings_fields(
-        device_state: dict[str, Any], settings, source: str
+        device_state: dict[str, Any], settings: Any, source: str
     ) -> None:
         """Parse a Settings frame's core control fields into device_state.
 
@@ -1885,7 +1904,7 @@ class SoundLightAPI:
         # A frame without color deliberately leaves existing color state alone.
 
     @staticmethod
-    def _parse_battery(device_state: dict[str, Any], battery) -> None:
+    def _parse_battery(device_state: dict[str, Any], battery: Any) -> None:
         """Parse a Status.Battery into device_state (percent + charging)."""
         if battery.HasField("soc"):
             device_state["battery_percent"] = _SOC_TO_PERCENT.get(battery.soc)
@@ -1899,7 +1918,7 @@ class SoundLightAPI:
         _LOGGER.debug("Battery charging=%s", charging)
 
     @staticmethod
-    def _parse_network(device_state: dict[str, Any], network_status) -> None:
+    def _parse_network(device_state: dict[str, Any], network_status: Any) -> None:
         """Parse a NetworkStatus.currentAp into device_state (wifi diagnostics)."""
         if not network_status.HasField("currentAp"):
             return
@@ -2115,15 +2134,21 @@ class SoundLightAPI:
         """Get current state for a device."""
         return self._device_state.get(baby_uid, {})
 
-    def set_state_change_callback(self, callback):
+    def set_state_change_callback(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
         """Set callback function to be called when device state changes via WebSocket."""
         self._state_change_callback = callback
 
-    def set_token_update_callback(self, callback):
+    def set_token_update_callback(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
         """Set callback function to be called when tokens are updated."""
         self._token_update_callback = callback
 
-    def set_local_host_resolver(self, resolver) -> None:
+    def set_local_host_resolver(
+        self, resolver: Callable[[str], Awaitable[str | None]] | None
+    ) -> None:
         """Inject an async resolver: speaker_uid -> LAN IPv4 (or None).
 
         The coordinator wires this to Home Assistant's zeroconf so the LAN path
