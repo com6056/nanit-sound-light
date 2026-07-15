@@ -1844,6 +1844,47 @@ class SoundLightAPI:
                     self._schedule_reconnect(baby_uid, transport)
 
     @staticmethod
+    def _parse_settings_fields(
+        device_state: dict[str, Any], settings, source: str
+    ) -> None:
+        """Parse a Settings frame's core control fields into device_state.
+
+        Shared by the Response branch (acks and poll replies) and the Request
+        branch (device/app pushes). `source` only labels the debug logs.
+        soundList and temperature/humidity stay in the Response branch,
+        matching where the device actually sends them.
+        """
+        if settings.HasField("brightness"):
+            device_state["brightness"] = settings.brightness
+            _LOGGER.debug("Settings[%s] brightness: %.3f", source, settings.brightness)
+        if settings.HasField("volume"):
+            device_state["volume"] = settings.volume
+            _LOGGER.debug("Settings[%s] volume: %.3f", source, settings.volume)
+        if settings.HasField("isOn"):
+            device_state["is_on"] = settings.isOn
+            _LOGGER.debug("Settings[%s] power: %s", source, settings.isOn)
+        if settings.HasField("sound"):
+            sound = settings.sound
+            if sound.HasField("noSound") and sound.noSound:
+                device_state["current_sound"] = "No sound"
+                _LOGGER.debug("Settings[%s] sound: No sound", source)
+            elif sound.HasField("track"):
+                device_state["current_sound"] = sound.track
+                _LOGGER.debug("Settings[%s] sound: %s", source, sound.track)
+        if settings.HasField("color"):
+            color = settings.color
+            if color.HasField("noColor"):
+                device_state["no_color"] = color.noColor
+            elif color.HasField("hue") or color.HasField("saturation"):
+                # hue/saturation without an explicit noColor implies color mode.
+                device_state["no_color"] = False
+            if color.HasField("hue"):
+                device_state["hue"] = color.hue
+            if color.HasField("saturation"):
+                device_state["saturation"] = color.saturation
+        # A frame without color deliberately leaves existing color state alone.
+
+    @staticmethod
     def _parse_battery(device_state: dict[str, Any], battery) -> None:
         """Parse a Status.Battery into device_state (percent + charging)."""
         if battery.HasField("soc"):
@@ -1880,286 +1921,195 @@ class SoundLightAPI:
         device_state = self._device_state.setdefault(baby_uid, {})
 
         try:
-            # Try parsing as new Message structure first (only for response messages, not deviceData)
-            try:
-                if not PROTOBUF_AVAILABLE:
-                    _LOGGER.error("Protobuf not available for processing message")
-                    return
-
-                message_response = Message()
-                message_response.ParseFromString(raw_message)
-
-                _LOGGER.debug("Successfully parsed as Message for %s", baby_uid)
-                _LOGGER.debug(
-                    "Message fields: %s",
-                    [field.name for field, _ in message_response.ListFields()],
-                )
-
-                # Handle response messages (responses to our requests)
-                if message_response.HasField("response"):
-                    response = message_response.response
-                    response_fields = [field.name for field, _ in response.ListFields()]
-                    _LOGGER.debug("Response fields: %s", response_fields)
-
-                    # A Response means the relay round-tripped to the physical
-                    # device, so it's attached (sticky, see the backend branch).
-                    self._mark_attached(baby_uid)
-                    self._resolve_pending_response(baby_uid, response)
-
-                    # Handle status response for sensors (use APK field names)
-                    if response.HasField("status"):
-                        status = response.status
-                        _LOGGER.debug("Found Status field in response")
-                        _LOGGER.debug(
-                            "Status fields: %s",
-                            [field.name for field, _ in status.ListFields()],
-                        )
-
-                        # Alternative sensor parsing from status (might be different from settings)
-                        if status.HasField("temperature"):
-                            device_state["temperature"] = status.temperature
-                            _LOGGER.debug("Temperature: %.1f°C", status.temperature)
-                        if status.HasField("humidity"):
-                            device_state["humidity"] = status.humidity
-                            _LOGGER.debug("Humidity: %.1f%%", status.humidity)
-                        # Battery (from GetStatus): coarse 5-bucket SoC + charging.
-                        if status.HasField("battery"):
-                            self._parse_battery(device_state, status.battery)
-
-                    # WiFi readback (from Network{getStatus}).
-                    if response.HasField("networkStatus"):
-                        self._parse_network(device_state, response.networkStatus)
-
-                    # Firmware version readback (from Firmware{info}).
-                    if response.HasField("firmware") and response.firmware.HasField(
-                        "version"
-                    ):
-                        device_state["firmware_version"] = _clean_device_string(
-                            response.firmware.version
-                        )
-                        _LOGGER.debug(
-                            "Firmware version for %s: %s",
-                            baby_uid,
-                            response.firmware.version,
-                        )
-
-                    # Handle settings response (device state, use APK field names)
-                    if response.HasField("settings"):
-                        settings = response.settings
-                        if settings.HasField("brightness"):
-                            device_state["brightness"] = settings.brightness
-                            _LOGGER.debug(
-                                "Parsed brightness from settings: %.3f",
-                                settings.brightness,
-                            )
-                        if settings.HasField("volume"):
-                            device_state["volume"] = settings.volume
-                            _LOGGER.debug(
-                                "Parsed volume from settings: %.3f", settings.volume
-                            )
-                        if settings.HasField("isOn"):
-                            device_state["is_on"] = settings.isOn
-                            _LOGGER.debug(
-                                "Parsed power state from settings: %s", settings.isOn
-                            )
-                        if settings.HasField("sound"):
-                            sound = settings.sound
-                            if sound.HasField("noSound") and sound.noSound:
-                                device_state["current_sound"] = "No sound"
-                            elif sound.HasField("track"):
-                                device_state["current_sound"] = sound.track
-                        if settings.HasField("color"):
-                            color = settings.color
-
-                            # Handle noColor field
-                            if color.HasField("noColor"):
-                                device_state["no_color"] = color.noColor
-                            else:
-                                # If device sends hue/saturation without noColor field, assume color is enabled
-                                if color.HasField("hue") or color.HasField(
-                                    "saturation"
-                                ):
-                                    device_state["no_color"] = False
-
-                            if color.HasField("hue"):
-                                device_state["hue"] = color.hue
-                            if color.HasField("saturation"):
-                                device_state["saturation"] = color.saturation
-                        else:
-                            # Don't override existing color state, device doesn't return color info
-                            pass
-
-                        # Parse available sounds list from device. Track
-                        # names come from the cloud/device as untrusted
-                        # strings, so clamp length and require printable chars
-                        # before exposing as HA select-entity options.
-                        if settings.HasField("soundList"):
-                            sound_list = settings.soundList
-                            if sound_list.tracks:
-                                clean_tracks = [
-                                    t[:64]
-                                    for t in sound_list.tracks
-                                    if t and t.isprintable() and t.strip()
-                                ]
-                                available_sounds = ["No sound"] + clean_tracks
-                                device_state["available_sounds"] = available_sounds
-                                _LOGGER.debug(
-                                    "Received dynamic sound list for %s: %s",
-                                    baby_uid,
-                                    available_sounds,
-                                )
-
-                        # Parse temperature and humidity sensors with test result logging
-                        temp_received = settings.HasField("temperature")
-                        humidity_received = settings.HasField("humidity")
-
-                        if temp_received:
-                            device_state["temperature"] = settings.temperature
-                            _LOGGER.debug("Temperature: %.1f°C", settings.temperature)
-
-                        if humidity_received:
-                            device_state["humidity"] = settings.humidity
-                            _LOGGER.debug("Humidity: %.1f%%", settings.humidity)
-
-                        # Log test results to determine if explicit requests are needed
-                        _LOGGER.debug(
-                            "Sensor data received: temp=%s, humidity=%s",
-                            "yes" if temp_received else "no",
-                            "yes" if humidity_received else "no",
-                        )
-
-                    return  # Successfully parsed as Message response
-
-                # Handle request messages (external changes from device/app)
-                elif message_response.HasField("request"):
-                    request = message_response.request
-                    _LOGGER.debug(
-                        "Processing Message request (external change) for %s", baby_uid
-                    )
-                    _LOGGER.debug(
-                        "Request fields: %s",
-                        [field.name for field, _ in request.ListFields()],
-                    )
-
-                    # Check for Status field for sensor data
-                    if request.HasField("status"):
-                        status = request.status
-                        _LOGGER.debug("Found Status field in external request")
-                        _LOGGER.debug(
-                            "Status fields: %s",
-                            [field.name for field, _ in status.ListFields()],
-                        )
-
-                        if status.HasField("temperature"):
-                            device_state["temperature"] = status.temperature
-                            _LOGGER.debug(
-                                "External temperature: %.1f°C", status.temperature
-                            )
-                        if status.HasField("humidity"):
-                            device_state["humidity"] = status.humidity
-                            _LOGGER.debug("External humidity: %.1f%%", status.humidity)
-
-                    # Parse external changes from request.settings field
-                    if request.HasField("settings"):
-                        settings = request.settings
-                        _LOGGER.debug("Found settings in external request message")
-
-                        # Parse external state changes including battery data
-                        if settings.HasField("brightness"):
-                            device_state["brightness"] = settings.brightness
-                            _LOGGER.debug(
-                                "External change, brightness: %.3f",
-                                settings.brightness,
-                            )
-
-                        if settings.HasField("volume"):
-                            device_state["volume"] = settings.volume
-                            _LOGGER.debug(
-                                "External change, volume: %.3f", settings.volume
-                            )
-                        if settings.HasField("isOn"):
-                            device_state["is_on"] = settings.isOn
-                            _LOGGER.debug("External change, power: %s", settings.isOn)
-                        if settings.HasField("sound"):
-                            sound = settings.sound
-                            if sound.HasField("noSound") and sound.noSound:
-                                device_state["current_sound"] = "No sound"
-                                _LOGGER.debug("External change, sound: No sound")
-                            elif sound.HasField("track"):
-                                device_state["current_sound"] = sound.track
-                                _LOGGER.debug("External change, sound: %s", sound.track)
-                        if settings.HasField("color"):
-                            color = settings.color
-
-                            # Handle noColor field
-                            if color.HasField("noColor"):
-                                device_state["no_color"] = color.noColor
-                            else:
-                                # If device sends hue/saturation without noColor field, assume color is enabled
-                                if color.HasField("hue") or color.HasField(
-                                    "saturation"
-                                ):
-                                    device_state["no_color"] = False
-
-                            if color.HasField("hue"):
-                                device_state["hue"] = color.hue
-                            if color.HasField("saturation"):
-                                device_state["saturation"] = color.saturation
-                        else:
-                            # Don't override existing color state, device doesn't return color info
-                            pass
-
-                        # Trigger callback for external changes
-                        if self._state_change_callback:
-                            _LOGGER.debug("Triggering callback for external change")
-                            try:
-                                await self._state_change_callback(baby_uid)
-                            except Exception as callback_error:
-                                _LOGGER.debug(
-                                    "External change callback failed: %s",
-                                    callback_error,
-                                )
-
-                    return  # Successfully parsed as Message request
-
-                # Backend readiness frame. The relay reports whether the physical
-                # device is attached behind it, gate availability + sends on it.
-                elif message_response.HasField("backend"):
-                    backend = message_response.backend
-                    status = None
-                    if backend.HasField("device") and backend.device.HasField("status"):
-                        status = backend.device.status
-                    if status == _BACKEND_STATUS_CONNECTED:
-                        _LOGGER.debug(
-                            "Backend: device %s attached (Connected)", baby_uid
-                        )
-                        self._mark_attached(baby_uid)
-                    else:
-                        # The real device sends bare/Disconnected backend frames
-                        # PERIODICALLY while fully usable (it keeps acking commands
-                        # and pushing state). Treating those as a hard detach made
-                        # the entity flap to unavailable and blocked sends. So a
-                        # non-Connected backend frame is NOT a detach: attachment
-                        # is sticky once established (by a Connected frame or any
-                        # real traffic) and only cleared on a socket drop.
-                        _LOGGER.debug(
-                            "Backend: device %s sent non-Connected status=%s "
-                            "(ignored, attachment stays sticky)",
-                            baby_uid,
-                            status,
-                        )
-                    return
-
-                # Parsed as a Message but carried none of response/request/
-                # backend: an unknown frame type, ignored.
-
-            except Exception as e:
-                _LOGGER.warning("Failed to parse message for %s: %s", baby_uid, e)
+            if not PROTOBUF_AVAILABLE:
+                _LOGGER.error("Protobuf not available for processing message")
                 return
 
+            message_response = Message()
+            message_response.ParseFromString(raw_message)
+
+            _LOGGER.debug("Successfully parsed as Message for %s", baby_uid)
+            _LOGGER.debug(
+                "Message fields: %s",
+                [field.name for field, _ in message_response.ListFields()],
+            )
+
+            # Handle response messages (responses to our requests)
+            if message_response.HasField("response"):
+                response = message_response.response
+                response_fields = [field.name for field, _ in response.ListFields()]
+                _LOGGER.debug("Response fields: %s", response_fields)
+
+                # A Response means the relay round-tripped to the physical
+                # device, so it's attached (sticky, see the backend branch).
+                self._mark_attached(baby_uid)
+                self._resolve_pending_response(baby_uid, response)
+
+                # Handle status response for sensors (use APK field names)
+                if response.HasField("status"):
+                    status = response.status
+                    _LOGGER.debug("Found Status field in response")
+                    _LOGGER.debug(
+                        "Status fields: %s",
+                        [field.name for field, _ in status.ListFields()],
+                    )
+
+                    # Alternative sensor parsing from status (might be different from settings)
+                    if status.HasField("temperature"):
+                        device_state["temperature"] = status.temperature
+                        _LOGGER.debug("Temperature: %.1f°C", status.temperature)
+                    if status.HasField("humidity"):
+                        device_state["humidity"] = status.humidity
+                        _LOGGER.debug("Humidity: %.1f%%", status.humidity)
+                    # Battery (from GetStatus): coarse 5-bucket SoC + charging.
+                    if status.HasField("battery"):
+                        self._parse_battery(device_state, status.battery)
+
+                # WiFi readback (from Network{getStatus}).
+                if response.HasField("networkStatus"):
+                    self._parse_network(device_state, response.networkStatus)
+
+                # Firmware version readback (from Firmware{info}).
+                if response.HasField("firmware") and response.firmware.HasField(
+                    "version"
+                ):
+                    device_state["firmware_version"] = _clean_device_string(
+                        response.firmware.version
+                    )
+                    _LOGGER.debug(
+                        "Firmware version for %s: %s",
+                        baby_uid,
+                        response.firmware.version,
+                    )
+
+                # Handle settings response (device state, use APK field names)
+                if response.HasField("settings"):
+                    settings = response.settings
+                    self._parse_settings_fields(device_state, settings, "response")
+
+                    # Parse available sounds list from device. Track
+                    # names come from the cloud/device as untrusted
+                    # strings, so clamp length and require printable chars
+                    # before exposing as HA select-entity options.
+                    if settings.HasField("soundList"):
+                        sound_list = settings.soundList
+                        if sound_list.tracks:
+                            clean_tracks = [
+                                t[:64]
+                                for t in sound_list.tracks
+                                if t and t.isprintable() and t.strip()
+                            ]
+                            available_sounds = ["No sound"] + clean_tracks
+                            device_state["available_sounds"] = available_sounds
+                            _LOGGER.debug(
+                                "Received dynamic sound list for %s: %s",
+                                baby_uid,
+                                available_sounds,
+                            )
+
+                    # Parse temperature and humidity sensors with test result logging
+                    temp_received = settings.HasField("temperature")
+                    humidity_received = settings.HasField("humidity")
+
+                    if temp_received:
+                        device_state["temperature"] = settings.temperature
+                        _LOGGER.debug("Temperature: %.1f°C", settings.temperature)
+
+                    if humidity_received:
+                        device_state["humidity"] = settings.humidity
+                        _LOGGER.debug("Humidity: %.1f%%", settings.humidity)
+
+                    # Log test results to determine if explicit requests are needed
+                    _LOGGER.debug(
+                        "Sensor data received: temp=%s, humidity=%s",
+                        "yes" if temp_received else "no",
+                        "yes" if humidity_received else "no",
+                    )
+
+                return  # Successfully parsed as Message response
+
+            # Handle request messages (external changes from device/app)
+            elif message_response.HasField("request"):
+                request = message_response.request
+                _LOGGER.debug(
+                    "Processing Message request (external change) for %s", baby_uid
+                )
+                _LOGGER.debug(
+                    "Request fields: %s",
+                    [field.name for field, _ in request.ListFields()],
+                )
+
+                # Check for Status field for sensor data
+                if request.HasField("status"):
+                    status = request.status
+                    _LOGGER.debug("Found Status field in external request")
+                    _LOGGER.debug(
+                        "Status fields: %s",
+                        [field.name for field, _ in status.ListFields()],
+                    )
+
+                    if status.HasField("temperature"):
+                        device_state["temperature"] = status.temperature
+                        _LOGGER.debug(
+                            "External temperature: %.1f°C", status.temperature
+                        )
+                    if status.HasField("humidity"):
+                        device_state["humidity"] = status.humidity
+                        _LOGGER.debug("External humidity: %.1f%%", status.humidity)
+
+                # Parse external changes from request.settings field
+                if request.HasField("settings"):
+                    _LOGGER.debug("Found settings in external request message")
+                    self._parse_settings_fields(
+                        device_state, request.settings, "external"
+                    )
+
+                    # Trigger callback for external changes
+                    if self._state_change_callback:
+                        _LOGGER.debug("Triggering callback for external change")
+                        try:
+                            await self._state_change_callback(baby_uid)
+                        except Exception as callback_error:
+                            _LOGGER.debug(
+                                "External change callback failed: %s",
+                                callback_error,
+                            )
+
+                return  # Successfully parsed as Message request
+
+            # Backend readiness frame. The relay reports whether the physical
+            # device is attached behind it, gate availability + sends on it.
+            elif message_response.HasField("backend"):
+                backend = message_response.backend
+                status = None
+                if backend.HasField("device") and backend.device.HasField("status"):
+                    status = backend.device.status
+                if status == _BACKEND_STATUS_CONNECTED:
+                    _LOGGER.debug("Backend: device %s attached (Connected)", baby_uid)
+                    self._mark_attached(baby_uid)
+                else:
+                    # The real device sends bare/Disconnected backend frames
+                    # PERIODICALLY while fully usable (it keeps acking commands
+                    # and pushing state). Treating those as a hard detach made
+                    # the entity flap to unavailable and blocked sends. So a
+                    # non-Connected backend frame is NOT a detach: attachment
+                    # is sticky once established (by a Connected frame or any
+                    # real traffic) and only cleared on a socket drop.
+                    _LOGGER.debug(
+                        "Backend: device %s sent non-Connected status=%s "
+                        "(ignored, attachment stays sticky)",
+                        baby_uid,
+                        status,
+                    )
+                return
+
+            # Parsed as a Message but carried none of response/request/
+            # backend: an unknown frame type, ignored.
+
         except Exception as e:
-            _LOGGER.warning("Protobuf parsing failed for %s: %s", baby_uid, e)
+            _LOGGER.warning("Failed to parse message for %s: %s", baby_uid, e)
             _LOGGER.debug("Message hex: %s", raw_message.hex())
+            return
 
     def get_device_state(self, baby_uid: str) -> dict[str, Any]:
         """Get current state for a device."""
