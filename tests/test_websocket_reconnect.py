@@ -421,6 +421,37 @@ async def test_persistent_auth_reject_escalates_reconnect_interval(nsl, monkeypa
     assert delays[-1] == nsl.api.AUTH_REJECT_RETRY_INTERVAL
 
 
+async def test_executor_shutdown_during_connect_is_quiet(nsl, monkeypatch, caplog):
+    """A reconnect racing HA's executor teardown (restart/stop) must not log
+    ERROR or count as a transient failure. Observed in production as 'Executor
+    shutdown has been called' noise during HA restarts."""
+    api = nsl.api.SoundLightAPI(session=None)
+    api._access_token = "test-token"
+    api._device_list = [DEVICE]
+    # wss:// so the connect path needs the executor-built TLS context.
+    monkeypatch.setattr(nsl.api, "SOUND_LIGHT_WS_BASE_URL", "wss://127.0.0.1:1")
+
+    loop = asyncio.get_running_loop()
+
+    def shutdown_executor(*_a, **_k):
+        raise RuntimeError("cannot schedule new futures after shutdown")
+
+    monkeypatch.setattr(loop, "run_in_executor", shutdown_executor)
+
+    with caplog.at_level(logging.DEBUG):
+        await api._connect_transport(DEVICE, "remote")
+
+    loud = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name.endswith(".api")
+    ]
+    assert not loud
+    assert api._transient_fail_counts == {}  # not treated as a device failure
+
+    await api.close()
+
+
 async def test_close_waits_for_connection_tasks(nsl, fake_nanit):
     """close() awaits its cancelled handler/reconnect tasks, so nothing from
     the old instance is still unwinding when a reload builds the next one."""

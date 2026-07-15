@@ -1030,7 +1030,19 @@ class SoundLightAPI:
                         if transport == TRANSPORT_LOCAL
                         else ssl.create_default_context
                     )
-                    ssl_context = await loop.run_in_executor(None, builder)
+                    try:
+                        ssl_context = await loop.run_in_executor(None, builder)
+                    except RuntimeError as e:
+                        # HA is tearing down its executor (restart/stop) while a
+                        # reconnect was in flight. Not a device failure: don't
+                        # count it as a transient error or log it loudly.
+                        _LOGGER.debug(
+                            "Skipping %s connect for %s during shutdown: %s",
+                            transport,
+                            speaker_uid,
+                            e,
+                        )
+                        return
 
                 websocket = await websockets.connect(
                     ws_url,
