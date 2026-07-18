@@ -183,6 +183,7 @@ async def test_device_token_expiration_in_ms_is_scaled(nsl):
 async def test_resolver_substitutes_ip_into_local_url(nsl, monkeypatch):
     """When a resolver is injected, local connects to wss://<resolved-ip>:442."""
     api = nsl.api.SoundLightAPI(session=None)
+    api._closing = True  # single-shot test: no background retry loop
     api._device_tokens["SPK123"] = ("dev-tok", None)
 
     async def resolver(speaker_uid):
@@ -206,6 +207,7 @@ async def test_resolver_substitutes_ip_into_local_url(nsl, monkeypatch):
 async def test_resolver_failure_stays_on_relay(nsl, monkeypatch):
     """If the resolver can't find the device, local connect is skipped entirely."""
     api = nsl.api.SoundLightAPI(session=None)
+    api._closing = True  # single-shot test: no background retry loop
     api._device_tokens["SPK123"] = ("dev-tok", None)
 
     async def resolver(_host):
@@ -393,6 +395,7 @@ async def test_local_403_invalidates_device_token_and_refetches(nsl, monkeypatch
         payload={"user_device_token": {"token": "FRESH", "expiration": 9_999_999_999}}
     )
     api = nsl.api.SoundLightAPI(session=session)
+    api._closing = True  # attempts are driven explicitly in this test
     api._access_token = "user-access"
     api._device_list = [DEVICE]
     # A stale cached token with no clock expiry: _ensure_device_token would keep
@@ -437,6 +440,7 @@ async def test_local_auth_reject_cooldown_stops_udtokens_refetch(nsl, monkeypatc
         payload={"user_device_token": {"token": "T", "expiration": 9_999_999_999}}
     )
     api = nsl.api.SoundLightAPI(session=session)
+    api._closing = True  # attempts are driven explicitly in this test
     api._access_token = "user-access"
     api._device_list = [DEVICE]
     monkeypatch.setattr(
@@ -487,3 +491,80 @@ async def test_local_disabled_connects_remote_only(nsl, monkeypatch):
     await api.close()
     await local.stop()
     await remote.stop()
+
+
+# ---------------------------------------------------------------------------
+# Initial-connect failures arm the retry loop (regression: a local 403 at
+# startup was never retried while the relay was up. Found on real hardware,
+# where the speaker's ONE local slot was held by another client)
+# ---------------------------------------------------------------------------
+
+
+async def test_initial_local_403_is_retried_and_recovers(nsl, monkeypatch):
+    """A local 403 on the FIRST-EVER connect self-heals without any poll.
+
+    The rejected attempt must arm the per-transport reconnect loop, which
+    refetches a fresh device token (the 403 invalidated the cache) and
+    connects. Before the fix nothing retried: the drop-driven reconnect only
+    covers sockets that had connected, and the 30s poll skips reconnects
+    while the other transport is up.
+    """
+    monkeypatch.setattr(nsl.api, "_LOCAL_BACKOFF_SCHEDULE", (0, 0.05, 0.05, 0.05))
+    local = _FakeNanit(nsl.pb2, reject_status=403, reject_first=1)
+    await local.start()
+
+    session = _FakeSession(
+        payload={"user_device_token": {"token": "FRESH", "expiration": 9_999_999_999}}
+    )
+    api = nsl.api.SoundLightAPI(session=session)
+    api._access_token = "user-access"
+    api._device_list = [DEVICE]
+    api._device_tokens["SPK123"] = ("STALE", None)
+    monkeypatch.setattr(
+        api, "_local_ws_url", lambda _uid: f"ws://127.0.0.1:{local.port}"
+    )
+
+    # ONE driver call, as initial setup does. Recovery must be automatic.
+    await api._connect_transport(DEVICE, "local")
+    assert not api._transport_connected(_local_key(api))
+
+    await _wait_until(lambda: api._transport_connected(_local_key(api)))
+    assert api._device_tokens["SPK123"][0] == "FRESH"
+
+    await api.close()
+    await local.stop()
+
+
+async def test_initial_resolver_miss_is_retried(nsl, monkeypatch):
+    """An mDNS miss at startup keeps retrying so a late-arriving device
+    still gets its local socket."""
+    monkeypatch.setattr(nsl.api, "_LOCAL_BACKOFF_SCHEDULE", (0, 0.05, 0.05, 0.05))
+    local = _FakeNanit(nsl.pb2)
+    await local.start()
+
+    api = nsl.api.SoundLightAPI(session=None)
+    api._device_list = [DEVICE]
+    api._device_tokens["SPK123"] = ("dev-tok", None)
+    results = ["miss", "hit"]
+
+    async def resolver(_uid):
+        return None if results.pop(0) == "miss" else "127.0.0.1"
+
+    api.set_local_host_resolver(resolver)
+    monkeypatch.setattr(nsl.api, "SOUND_LIGHT_LOCAL_WS_PORT", local.port)
+    # Downgrade wss to ws for the fake (the resolver path builds wss URLs).
+    real_connect = nsl.api.websockets.connect
+
+    def plain_ws_connect(url, **kw):
+        kw.pop("ssl", None)
+        return real_connect(url.replace("wss://", "ws://"), **kw)
+
+    monkeypatch.setattr(nsl.api.websockets, "connect", plain_ws_connect)
+
+    await api._connect_transport(DEVICE, "local")
+    assert not api._transport_connected(_local_key(api))
+
+    await _wait_until(lambda: api._transport_connected(_local_key(api)))
+
+    await api.close()
+    await local.stop()

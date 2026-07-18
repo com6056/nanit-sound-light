@@ -978,6 +978,7 @@ class SoundLightAPI:
                     speaker_uid,
                     remaining,
                 )
+                self._schedule_reconnect(baby_uid, transport)
                 return
 
             if transport == TRANSPORT_REMOTE:
@@ -1011,11 +1012,17 @@ class SoundLightAPI:
                             "Local mDNS resolve failed for %s, staying on relay",
                             speaker_uid,
                         )
+                        # Keep the local retry loop alive: the device may join
+                        # the LAN (or mDNS may settle) later. The local backoff
+                        # caps at 90s, so a permanently-remote setup only pays
+                        # a cheap periodic browse.
+                        self._schedule_reconnect(baby_uid, transport)
                         return
                     ws_url = f"wss://{ip}:{SOUND_LIGHT_LOCAL_WS_PORT}"
                 token = await self._ensure_device_token(speaker_uid)
             if not token:
                 # No usable token (no access token, or local token unavailable).
+                self._schedule_reconnect(baby_uid, transport)
                 return
 
             # The WebSocket handshake uses the `token` auth scheme, NOT `Bearer`,
@@ -1098,6 +1105,20 @@ class SoundLightAPI:
                 )
 
             except Exception as e:
+                if isinstance(e, RuntimeError) and "shutdown" in str(e).lower():
+                    # HA is tearing down its executor (restart/stop) while a
+                    # reconnect was in flight. The guard around the SSL-context
+                    # builder above catches most of these, but the RuntimeError
+                    # can also surface from inside the connect call (its DNS
+                    # resolution uses the executor too). Not a device failure:
+                    # no error counting, no retry scheduling, no loud log.
+                    _LOGGER.debug(
+                        "Skipping %s connect for %s during shutdown: %s",
+                        transport,
+                        speaker_uid,
+                        e,
+                    )
+                    return
                 status = self._handshake_status(e)
                 reject_statuses = (
                     _AUTH_REJECT_STATUSES_LOCAL
@@ -1113,6 +1134,14 @@ class SoundLightAPI:
                     self._log_transient_connect_failure(
                         connection_key, transport, speaker_uid, e
                     )
+                # Arm the per-transport retry loop. Without this, a transport
+                # whose FIRST-EVER connect fails (e.g. a local 403 at startup
+                # while another client holds the speaker's one local slot) was
+                # never retried: the drop-driven reconnect only covers sockets
+                # that had connected, and the 30s poll skips reconnects while
+                # the other transport is up. A no-op when the loop is already
+                # the caller.
+                self._schedule_reconnect(baby_uid, transport)
 
     def _handle_auth_reject(
         self, connection_key: str, transport: str, speaker_uid: str, exc: Exception
