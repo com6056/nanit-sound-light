@@ -314,3 +314,43 @@ def test_additive_v468_fields_are_ignored_not_errors(nsl, api):
     reparsed.ParseFromString(raw)  # must not raise
     assert reparsed.isOn is True
     assert reparsed.brightness == pytest.approx(1.0)
+
+
+async def test_malformed_frames_are_handled_gracefully(nsl, api):
+    """Garbage, truncated, and oversized frames must not crash the parser."""
+    key = api._conn_key("baby123", "remote")
+    before = dict(api.get_device_state("baby123"))
+
+    await api._process_protobuf_message(key, b"\xff\x13garbage\x00\x01")
+    await api._process_protobuf_message(key, b"\x0a")  # truncated field header
+    await api._process_protobuf_message(key, bytes(64 * 1024))  # zero-filled blob
+
+    assert api.get_device_state("baby123") == before
+    assert api.is_device_attached("baby123") is False  # junk must not latch attachment
+
+
+async def test_non_finite_wire_floats_are_rejected(nsl, api):
+    """NaN/Inf/out-of-range floats from the wire must not reach HA state."""
+    pb2 = nsl.pb2
+    settings = pb2.Settings(brightness=float("nan"), volume=float("inf"))
+    settings.color.hue = 5.0  # out of unit range: clamped
+    message = pb2.Message(response=pb2.Response(requestId=1, settings=settings))
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
+
+    state = api.get_device_state("baby123")
+    assert "brightness" not in state  # NaN rejected
+    assert "volume" not in state  # Inf rejected
+    assert state["hue"] == 1.0  # clamped to the unit interval
+
+
+async def test_unprintable_track_name_is_dropped(nsl, api):
+    """An unprintable current-track string must not become the select state."""
+    pb2 = nsl.pb2
+    settings = pb2.Settings(sound=pb2.Sound(noSound=False, track="bad\x07bell"))
+    message = pb2.Message(response=pb2.Response(requestId=1, settings=settings))
+    await api._process_protobuf_message(
+        api._conn_key("baby123", "remote"), message.SerializeToString()
+    )
+    assert "current_sound" not in api.get_device_state("baby123")

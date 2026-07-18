@@ -183,7 +183,7 @@ async def test_device_token_expiration_in_ms_is_scaled(nsl):
 async def test_resolver_substitutes_ip_into_local_url(nsl, monkeypatch):
     """When a resolver is injected, local connects to wss://<resolved-ip>:442."""
     api = nsl.api.SoundLightAPI(session=None)
-    api._closing = True  # single-shot test: no background retry loop
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._device_tokens["SPK123"] = ("dev-tok", None)
 
     async def resolver(speaker_uid):
@@ -207,7 +207,7 @@ async def test_resolver_substitutes_ip_into_local_url(nsl, monkeypatch):
 async def test_resolver_failure_stays_on_relay(nsl, monkeypatch):
     """If the resolver can't find the device, local connect is skipped entirely."""
     api = nsl.api.SoundLightAPI(session=None)
-    api._closing = True  # single-shot test: no background retry loop
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._device_tokens["SPK123"] = ("dev-tok", None)
 
     async def resolver(_host):
@@ -395,7 +395,7 @@ async def test_local_403_invalidates_device_token_and_refetches(nsl, monkeypatch
         payload={"user_device_token": {"token": "FRESH", "expiration": 9_999_999_999}}
     )
     api = nsl.api.SoundLightAPI(session=session)
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._access_token = "user-access"
     api._device_list = [DEVICE]
     # A stale cached token with no clock expiry: _ensure_device_token would keep
@@ -440,7 +440,7 @@ async def test_local_auth_reject_cooldown_stops_udtokens_refetch(nsl, monkeypatc
         payload={"user_device_token": {"token": "T", "expiration": 9_999_999_999}}
     )
     api = nsl.api.SoundLightAPI(session=session)
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._access_token = "user-access"
     api._device_list = [DEVICE]
     monkeypatch.setattr(

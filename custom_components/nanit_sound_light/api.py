@@ -7,6 +7,7 @@ import base64
 import binascii
 import json
 import logging
+import math
 import secrets
 import ssl
 import time
@@ -48,6 +49,18 @@ def _clean_device_string(value: object, max_len: int = 64) -> str | None:
         return None
     value = value[:max_len]
     return value if value.isprintable() and value.strip() else None
+
+
+def _unit_float(value: float) -> float | None:
+    """Clamp an untrusted wire float to 0.0-1.0, rejecting non-finite values."""
+    if not math.isfinite(value):
+        return None
+    return min(1.0, max(0.0, value))
+
+
+def _finite_float(value: float) -> float | None:
+    """Reject non-finite untrusted wire floats (temperature/humidity)."""
+    return value if math.isfinite(value) else None
 
 
 def _redact_response_for_log(body: str | bytes | dict[str, Any]) -> str:
@@ -961,6 +974,8 @@ class SoundLightAPI:
 
         lock = self._connect_locks.setdefault(connection_key, asyncio.Lock())
         async with lock:
+            if self._closing:
+                return  # shutting down: never open new sockets
             if self._transport_connected(connection_key):
                 return  # connected while we waited for the lock
 
@@ -1067,6 +1082,13 @@ class SoundLightAPI:
                     close_timeout=WS_CLOSE_TIMEOUT,
                 )
 
+                if self._closing:
+                    # close() ran while the handshake was in flight; this
+                    # socket would outlive the api instance (and squat the
+                    # speaker's one local slot). Close it, don't store it.
+                    await websocket.close()
+                    return
+
                 self._websockets[connection_key] = websocket
                 # Connected cleanly, so clear any persistent auth-rejection and
                 # transient-failure state for this transport (back to the fast
@@ -1090,9 +1112,16 @@ class SoundLightAPI:
                     self._handle_messages(connection_key, websocket)
                 )
                 self._handler_tasks[connection_key] = task
-                task.add_done_callback(
-                    lambda _t: self._handler_tasks.pop(connection_key, None)
-                )
+
+                def _drop_handler_ref(done: asyncio.Task[None]) -> None:
+                    # Pop by identity: a reconnect may have registered a NEWER
+                    # handler under this key while the old one drained its
+                    # close handshake, and the old task's callback must not
+                    # evict the replacement's strong reference.
+                    if self._handler_tasks.get(connection_key) is done:
+                        self._handler_tasks.pop(connection_key, None)
+
+                task.add_done_callback(_drop_handler_ref)
 
                 # Nothing else to send on open. The app sends nothing until the
                 # route is ready (the backend Connected frame on remote, the
@@ -1903,11 +1932,15 @@ class SoundLightAPI:
         matching where the device actually sends them.
         """
         if settings.HasField("brightness"):
-            device_state["brightness"] = settings.brightness
-            _LOGGER.debug("Settings[%s] brightness: %.3f", source, settings.brightness)
+            brightness = _unit_float(settings.brightness)
+            if brightness is not None:
+                device_state["brightness"] = brightness
+                _LOGGER.debug("Settings[%s] brightness: %.3f", source, brightness)
         if settings.HasField("volume"):
-            device_state["volume"] = settings.volume
-            _LOGGER.debug("Settings[%s] volume: %.3f", source, settings.volume)
+            volume = _unit_float(settings.volume)
+            if volume is not None:
+                device_state["volume"] = volume
+                _LOGGER.debug("Settings[%s] volume: %.3f", source, volume)
         if settings.HasField("isOn"):
             device_state["is_on"] = settings.isOn
             _LOGGER.debug("Settings[%s] power: %s", source, settings.isOn)
@@ -1917,8 +1950,13 @@ class SoundLightAPI:
                 device_state["current_sound"] = "No sound"
                 _LOGGER.debug("Settings[%s] sound: No sound", source)
             elif sound.HasField("track"):
-                device_state["current_sound"] = sound.track
-                _LOGGER.debug("Settings[%s] sound: %s", source, sound.track)
+                # Track names are untrusted device/cloud strings that become
+                # the select entity's current option; clamp + printable-check
+                # like the soundList branch.
+                track = _clean_device_string(sound.track)
+                if track:
+                    device_state["current_sound"] = track
+                    _LOGGER.debug("Settings[%s] sound: %s", source, track)
         if settings.HasField("color"):
             color = settings.color
             if color.HasField("noColor"):
@@ -1927,9 +1965,13 @@ class SoundLightAPI:
                 # hue/saturation without an explicit noColor implies color mode.
                 device_state["no_color"] = False
             if color.HasField("hue"):
-                device_state["hue"] = color.hue
+                hue = _unit_float(color.hue)
+                if hue is not None:
+                    device_state["hue"] = hue
             if color.HasField("saturation"):
-                device_state["saturation"] = color.saturation
+                saturation = _unit_float(color.saturation)
+                if saturation is not None:
+                    device_state["saturation"] = saturation
         # A frame without color deliberately leaves existing color state alone.
 
     @staticmethod
@@ -2004,11 +2046,15 @@ class SoundLightAPI:
 
                     # Alternative sensor parsing from status (might be different from settings)
                     if status.HasField("temperature"):
-                        device_state["temperature"] = status.temperature
-                        _LOGGER.debug("Temperature: %.1f°C", status.temperature)
+                        temperature = _finite_float(status.temperature)
+                        if temperature is not None:
+                            device_state["temperature"] = temperature
+                        _LOGGER.debug("Temperature: %.1f°C", temperature)
                     if status.HasField("humidity"):
-                        device_state["humidity"] = status.humidity
-                        _LOGGER.debug("Humidity: %.1f%%", status.humidity)
+                        humidity = _finite_float(status.humidity)
+                        if humidity is not None:
+                            device_state["humidity"] = humidity
+                        _LOGGER.debug("Humidity: %.1f%%", humidity)
                     # Battery (from GetStatus): coarse 5-bucket SoC + charging.
                     if status.HasField("battery"):
                         self._parse_battery(device_state, status.battery)
@@ -2060,12 +2106,16 @@ class SoundLightAPI:
                     humidity_received = settings.HasField("humidity")
 
                     if temp_received:
-                        device_state["temperature"] = settings.temperature
-                        _LOGGER.debug("Temperature: %.1f°C", settings.temperature)
+                        temperature = _finite_float(settings.temperature)
+                        if temperature is not None:
+                            device_state["temperature"] = temperature
+                            _LOGGER.debug("Temperature: %.1f°C", temperature)
 
                     if humidity_received:
-                        device_state["humidity"] = settings.humidity
-                        _LOGGER.debug("Humidity: %.1f%%", settings.humidity)
+                        humidity = _finite_float(settings.humidity)
+                        if humidity is not None:
+                            device_state["humidity"] = humidity
+                            _LOGGER.debug("Humidity: %.1f%%", humidity)
 
                     # Log test results to determine if explicit requests are needed
                     _LOGGER.debug(
@@ -2097,13 +2147,15 @@ class SoundLightAPI:
                     )
 
                     if status.HasField("temperature"):
-                        device_state["temperature"] = status.temperature
-                        _LOGGER.debug(
-                            "External temperature: %.1f°C", status.temperature
-                        )
+                        temperature = _finite_float(status.temperature)
+                        if temperature is not None:
+                            device_state["temperature"] = temperature
+                            _LOGGER.debug("External temperature: %.1f°C", temperature)
                     if status.HasField("humidity"):
-                        device_state["humidity"] = status.humidity
-                        _LOGGER.debug("External humidity: %.1f%%", status.humidity)
+                        humidity = _finite_float(status.humidity)
+                        if humidity is not None:
+                            device_state["humidity"] = humidity
+                            _LOGGER.debug("External humidity: %.1f%%", humidity)
 
                 # Parse external changes from request.settings field
                 if request.HasField("settings"):

@@ -355,7 +355,7 @@ async def test_persistent_remote_auth_reject_quiets_logs(nsl, monkeypatch, caplo
     device can't flood the log with one ERROR per retry."""
     server = await _serve(nsl, monkeypatch, reject_status=403, reject_always=True)
     api = nsl.api.SoundLightAPI(session=None)
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._access_token = "test-token"
     api._device_list = [DEVICE]
     key = api._conn_key("baby123", "remote")
@@ -527,7 +527,7 @@ async def test_repeated_transient_remote_failures_quiet_logs(nsl, monkeypatch, c
     level is throttled. Every call below still attempts a real connect
     (unlike the auth-reject cooldown, which short-circuits attempts)."""
     api = nsl.api.SoundLightAPI(session=None)
-    api._closing = True  # attempts are driven explicitly in this test
+    api._schedule_reconnect = lambda *_a, **_k: None  # drive attempts explicitly
     api._access_token = "test-token"
     api._device_list = [DEVICE]
     # Nothing listens here: every connect attempt fails fast (refused).
