@@ -173,6 +173,13 @@ fix two real, recurring failures. Don't revert these without understanding why:
   the per-key count and timestamp, so a normal transient drop keeps the fast
   backoff, and the first few sub-threshold rejections still retry fast and refetch
   the token so a genuine token rotation self-heals quickly.
+  **One local client per speaker (hardware finding, 2026-07-18, firmware
+  1.3.1):** the device 403s a second local WebSocket even with a freshly
+  minted device token, and accepts the moment the first client releases the
+  socket. So a persistent local 403 is NOT necessarily a wedged device:
+  another client (the phone app on the same LAN, or a second HA instance)
+  may simply hold the slot. The initial-connect retry loop (added with this
+  finding) takes the slot automatically when it frees.
   Auth statuses are 401/403 for local and 401/403/404 for the relay (a 404 on
   `user_connect` means the relay holds no session for the device, so retrying
   fast is pointless). Status is read defensively from the websockets exception
