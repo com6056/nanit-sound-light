@@ -70,3 +70,5 @@ Nanit camera, all the camera features arrive with the same config entry.
 - Something not covered here: open an issue on
   [ha-nanit](https://github.com/wealthystudent/ha-nanit/issues), which is
   where Sound + Light support is maintained now.
+
+Thanks for running Nanit Sound + Light, and see you over in ha-nanit!
