@@ -7,11 +7,9 @@ protobuf WebSocket to the device for real-time state and control.
 > **This is a PUBLIC repository.** Never commit personal names, internal
 > hostnames or domains, the private infrastructure repo this integration is
 > developed alongside, or unrelated private projects. Keep it strictly about
-> this integration. A pre-commit leak scan enforces this: `.githooks/leak-scan.sh`
-> blocks any commit whose staged content matches a **gitignored** local denylist
-> (`.leak-denylist.local`, seeded from `.leak-denylist.local.example`. The real
-> terms live only there so they never enter this repo). Enable it per clone with
-> `git config core.hooksPath .githooks`. Override a false positive with
+> this integration. A leak scan enforces this. It is no longer part of this
+> repo: it runs from a machine-wide git hook, so do not set `core.hooksPath`
+> here, or that hook stops running. Override a false positive with
 > `LEAK_SCAN_SKIP=1 git commit`. The same pre-commit hook also runs **ruff** (on
 > staged Python) and **prettier** (on staged `json`/`md`/`yml`), both in throwaway
 > containers: they auto-fix what they can (ruff `format` + safe `--fix`, prettier

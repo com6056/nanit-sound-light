@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 # Pre-commit gate:
-#   (1) leak scan: block commits containing private terms (see leak-scan.sh).
-#   (2) ruff (Python) and prettier (json/md/yml): auto-fix what they can and
-#       RE-STAGE the fixes into the commit, then block only on what can't be
-#       fixed. This mirrors what CI enforces, so a lint or format error can't slip
-#       into a push (both have, before this hook covered them).
+#   ruff (Python) and prettier (json/md/yml): auto-fix what they can and
+#   RE-STAGE the fixes into the commit, then block only on what can't be fixed.
+#   This mirrors what CI enforces, so a lint or format error can't slip into a
+#   push (both have, before this hook covered them).
 # Both run in throwaway containers (nothing installed locally). Bypass with
 # LINT_SKIP=1, or skip with a warning when there's no container runtime.
 # --force-exclude keeps the generated *_pb2.py untouched (CI requires it
 # byte-identical to protoc output).
 set -uo pipefail
 root="$(git rev-parse --show-toplevel)"
-
-# (1) Leak scan.
-"$root/.githooks/leak-scan.sh" || exit 1
 
 [ "${LINT_SKIP:-}" = "1" ] && exit 0
 
