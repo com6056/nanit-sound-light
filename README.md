@@ -16,8 +16,8 @@
 > v1.12.0, it contains everything from this project (same transport, same
 > entities, same sensors) and works with or without a Nanit camera. New
 > installs should use ha-nanit. Existing users: the move takes about ten
-> minutes, see [MIGRATION.md](MIGRATION.md). This repository now receives
-> critical fixes only and will be archived around the end of September 2026.
+> minutes, see [MIGRATION.md](MIGRATION.md). This repository is archived and
+> read-only as of September 2026. Please open issues on ha-nanit instead!
 
 Control your Nanit Sound + Light from Home Assistant: the light, the sound
 machine, power, and the device's sensors. It does not control Nanit cameras.
